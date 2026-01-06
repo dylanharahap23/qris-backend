@@ -1,28 +1,31 @@
-﻿require('dotenv').config();
-const express = require('express');
+﻿// server.js - tanpa dotenv
+// HAPUS LINE INI: require('dotenv').config();
+
+const express = require("express");
+const cors = require("cors");
+const bodyParser = require("body-parser");
 const http = require('http');
 const WebSocket = require('ws');
 
 const app = express();
 const server = http.createServer(app);
-const PORT = process.env.PORT || 10000; // Render default port 10000
+const PORT = process.env.PORT || 10000; // Render otomatis set PORT
 
-// ========== WEB SOCKET SETUP (RENDER STYLE) ==========
+// ========== WEB SOCKET SETUP ==========
 const wss = new WebSocket.Server({ server, path: '/ws' });
 
-// Heartbeat function untuk deteksi connection mati
+// Heartbeat function
 function heartbeat() {
   this.isAlive = true;
 }
 
-// Store merchant connections
 const merchantConnections = new Map();
 
 wss.on('connection', function connection(ws, req) {
   console.log('🔌 New WebSocket client connected');
   
-  // Extract merchantId from URL
-  const url = req.url;
+  // Extract merchantId
+  const url = req.url || '';
   const merchantId = getMerchantIdFromUrl(url);
   
   if (merchantId) {
@@ -33,59 +36,40 @@ wss.on('connection', function connection(ws, req) {
     ws.isAlive = true;
     ws.on('pong', heartbeat);
     
-    // Send welcome message
+    // Send welcome
     ws.send(JSON.stringify({
       type: 'CONNECTED',
-      message: `WebSocket connected for merchant ${merchantId}`,
+      message: `Connected for merchant ${merchantId}`,
       merchantId: merchantId,
-      timestamp: new Date().toISOString(),
-      note: 'Send ping every 30 seconds to keep connection alive'
+      timestamp: new Date().toISOString()
     }));
   } else {
-    console.log('⚠️ Connection without merchantId');
     ws.send(JSON.stringify({
       type: 'ERROR',
-      message: 'merchantId parameter required',
-      example: 'wss://your-app.onrender.com/ws?merchantId=MER001'
+      message: 'merchantId parameter required'
     }));
     ws.close(1008, 'Missing merchantId');
   }
   
   ws.on('message', function message(data) {
     console.log('📨 Received:', data.toString());
-    
-    try {
-      const msg = JSON.parse(data);
-      if (msg.type === 'PING') {
-        ws.send(JSON.stringify({ 
-          type: 'PONG', 
-          timestamp: new Date().toISOString() 
-        }));
-      }
-    } catch (error) {
-      // Not JSON, echo back
-      ws.send(`Echo: ${data}`);
-    }
   });
   
-  ws.on('error', function error(err) {
-    console.error('❌ WebSocket error:', err.message);
-  });
+  ws.on('error', console.error);
   
   ws.on('close', function close() {
-    console.log(`🔌 Connection closed for merchant: ${merchantId}`);
+    console.log(`🔌 Connection closed for: ${merchantId}`);
     if (merchantId) merchantConnections.delete(merchantId);
   });
 });
 
-// Ping semua connected clients setiap 30 detik (seperti contoh Render)
+// Ping clients every 30 seconds
 const interval = setInterval(function ping() {
   wss.clients.forEach(function each(ws) {
     if (ws.isAlive === false) {
       console.log('Terminating stale connection');
       return ws.terminate();
     }
-    
     ws.isAlive = false;
     ws.ping();
   });
@@ -95,7 +79,7 @@ wss.on('close', function close() {
   clearInterval(interval);
 });
 
-// Helper function
+// Helper functions
 function getMerchantIdFromUrl(url) {
   try {
     const queryString = url.split('?')[1];
@@ -107,12 +91,11 @@ function getMerchantIdFromUrl(url) {
   }
 }
 
-// Helper untuk send notification
 function sendNotificationToMerchant(merchantId, notification) {
   const ws = merchantConnections.get(merchantId);
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(notification));
-    console.log(`📤 Notification sent to ${merchantId}:`, notification.type);
+    console.log(`📤 Notification sent to ${merchantId}`);
     return true;
   }
   console.log(`⚠️ Merchant ${merchantId} not connected`);
@@ -120,67 +103,54 @@ function sendNotificationToMerchant(merchantId, notification) {
 }
 
 // ========== EXPRESS MIDDLEWARE ==========
+app.use(cors({ origin: '*' }));
 app.use(express.json());
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  next();
-});
 
 // ========== API ENDPOINTS ==========
 
-// Health check (WAJIB untuk Render)
-app.get('/', (req, res) => {
+app.get("/", (req, res) => {
   res.json({
-    service: 'QRIS Payment Gateway',
-    version: '3.0.0',
-    status: 'running',
+    service: "QRIS Payment Gateway",
+    version: "3.0.0",
+    status: "running",
     websocket: true,
-    endpoint: '/ws?merchantId=YOUR_ID',
-    timestamp: new Date().toISOString(),
-    connections: merchantConnections.size
+    endpoint: "/ws?merchantId=YOUR_ID",
+    timestamp: new Date().toISOString()
   });
 });
 
-// Health endpoint untuk Render health checks
-app.get('/health', (req, res) => {
+app.get("/health", (req, res) => {
   res.json({
-    status: 'healthy',
+    status: "healthy",
     timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    connections: merchantConnections.size
+    uptime: process.uptime()
   });
 });
 
-// Payment processing
-app.post('/api/payment', (req, res) => {
-  console.log('💳 Payment request:', req.body);
+app.post("/api/payment", (req, res) => {
+  console.log("💳 Payment request:", req.body);
   
-  const { merchantId, amount, paymentMethod } = req.body;
+  const { merchantId, amount } = req.body;
   
   if (!merchantId || !amount) {
-    return res.status(400).json({ error: 'Missing required fields' });
+    return res.status(400).json({ error: "Missing required fields" });
   }
   
   const transaction = {
     id: `TRX-${Date.now()}`,
     merchantId,
     amount: parseFloat(amount),
-    paymentMethod: paymentMethod || 'QRIS',
-    status: 'SUCCESS',
-    timestamp: new Date().toISOString(),
-    rrn: `RRN${Date.now().toString().slice(-10)}`,
-    authCode: `AUTH${Math.random().toString(36).substr(2, 8).toUpperCase()}`
+    status: "SUCCESS",
+    timestamp: new Date().toISOString()
   };
   
   console.log(`✅ Payment processed: ${transaction.id}`);
   
-  // Send WebSocket notification
+  // Send notification
   const notification = {
     type: 'NEW_PAYMENT',
     title: '💳 New Payment!',
-    message: `Payment Rp ${amount.toLocaleString('id-ID')} received`,
+    message: `Payment Rp ${amount} received`,
     transaction: transaction,
     timestamp: new Date().toISOString()
   };
@@ -191,47 +161,17 @@ app.post('/api/payment', (req, res) => {
     success: true,
     transaction: transaction,
     notificationSent: sent,
-    message: sent ? 'Merchant notified in real-time' : 'Merchant offline, payment recorded'
-  });
-});
-
-// Get server status
-app.get('/api/status', (req, res) => {
-  res.json({
-    status: 'online',
-    websocket: 'active',
-    connectedMerchants: Array.from(merchantConnections.keys()),
-    timestamp: new Date().toISOString()
+    message: sent ? 'Merchant notified' : 'Merchant offline'
   });
 });
 
 // ========== START SERVER ==========
 server.listen(PORT, '0.0.0.0', () => {
   console.log('='.repeat(60));
-  console.log('🚀 QRIS PAYMENT GATEWAY (RENDER COMPATIBLE)');
+  console.log('🚀 QRIS PAYMENT GATEWAY - RENDER FIXED');
   console.log('='.repeat(60));
   console.log(`📡 Port: ${PORT}`);
-  console.log(`🌐 HTTP: https://qris-backend.onrender.com`);
-  console.log(`🔌 WebSocket: wss://qris-backend.onrender.com/ws`);
-  console.log('');
-  console.log('💡 IMPORTANT FOR RENDER:');
-  console.log('1. WebSocket path: /ws');
-  console.log('2. Heartbeat ping every 30 seconds');
-  console.log('3. Health endpoint at /health');
-  console.log('4. All origins allowed (*)');
+  console.log(`🌐 HTTP API ready`);
+  console.log(`🔌 WebSocket: /ws path`);
   console.log('='.repeat(60));
-});
-
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received, closing WebSocket connections...');
-  
-  wss.clients.forEach((client) => {
-    client.close(1001, 'Server shutting down');
-  });
-  
-  server.close(() => {
-    console.log('Server closed');
-    process.exit(0);
-  });
 });
