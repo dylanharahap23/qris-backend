@@ -1,4 +1,4 @@
-﻿// server.js - QRIS Payment Gateway with Switch Callback & Multi-Channel Notification
+﻿// server.js - QRIS Payment Gateway v4.0 with Enhanced WebSocket Stability for Render.com
 const express = require("express");
 const cors = require("cors");
 const bodyParser = require("body-parser");
@@ -18,7 +18,9 @@ const config = {
     ['MER002', 'https://merchant002.com/api/callback'],
   ]),
   pushNotificationEnabled: true,
-  merchantDeviceEnabled: true
+  merchantDeviceEnabled: true,
+  websocketKeepAlive: 25000, // 25 seconds for Render.com
+  maxConnectionAge: 300000   // 5 minutes
 };
 
 // ========== SIMULATION STATE ==========
@@ -31,6 +33,9 @@ const simulationState = {
   
   // Merchant device connections (for EDC/printer simulation)
   merchantDevices: new Map(),
+  
+  // Connection tracking
+  activeConnections: new Map(),
   
   // Mock data
   mockBanks: [
@@ -58,131 +63,204 @@ const simulationState = {
 };
 
 // ========== MIDDLEWARE ==========
-app.use(cors({ origin: '*' }));
+app.use(cors({ 
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-switch-signature', 'x-switch-timestamp'],
+  credentials: true
+}));
 app.use(bodyParser.json());
 app.use(express.json());
 
-// ========== WEB SOCKET SETUP (Merchant Dashboard) ==========
-const wss = new WebSocket.Server({ server, path: '/ws' });
+// Handle preflight requests
+app.options('*', cors());
 
-wss.on('connection', function connection(ws, req) {
-  console.log('🔌 New WebSocket client connected');
-  
-  const url = req.url || '';
-  const queryString = url.split('?')[1];
-  let merchantId = null;
-  
-  if (queryString) {
-    const params = new URLSearchParams(queryString);
-    merchantId = params.get('merchantId');
-  }
-  
-  if (!merchantId) {
-    ws.send(JSON.stringify({
-      type: 'ERROR',
-      message: 'merchantId parameter required in query string'
-    }));
-    ws.close(1008, 'Missing merchantId');
-    return;
-  }
-  
-  console.log(`✅ Merchant ${merchantId} connected to dashboard`);
-  
-  ws.merchantId = merchantId;
-  ws.connectionType = 'DASHBOARD';
-  ws.isAlive = true;
-  
-  ws.on('pong', () => {
-    ws.isAlive = true;
-  });
-  
-  ws.send(JSON.stringify({
-    type: 'CONNECTED',
-    message: `Dashboard connected for merchant ${merchantId}`,
-    merchantId: merchantId,
-    timestamp: new Date().toISOString(),
-    connectionId: `DASH-${Date.now()}`
-  }));
-  
-  ws.on('message', function message(data) {
-    try {
-      const message = JSON.parse(data.toString());
-      if (message.type === 'PING') {
-        ws.send(JSON.stringify({ type: 'PONG', timestamp: new Date().toISOString() }));
-      }
-    } catch (error) {
-      // Ignore non-JSON messages
-    }
-  });
-  
-  ws.on('close', () => {
-    console.log(`🔌 Dashboard disconnected for merchant: ${merchantId}`);
-  });
+// ========== ENHANCED WEB SOCKET ENDPOINT FOR RENDER.COM ==========
+const wss = new WebSocket.Server({ 
+  server, 
+  path: '/ws',
+  clientTracking: true, // Pastikan ini TRUE
+  perMessageDeflate: false
 });
 
-// ========== WEB SOCKET FOR MERCHANT DEVICES (EDC/Printer) ==========
-const deviceWss = new WebSocket.Server({ server, path: '/ws/device' });
+// Track semua connections GLOBALLY
+const activeConnections = new Map();
 
-deviceWss.on('connection', function connection(ws, req) {
-  console.log('🖨️  New merchant device connected');
+wss.on('connection', function connection(ws, req) {
+  console.log('🔌 New WebSocket client connecting...');
   
   const url = req.url || '';
   const queryString = url.split('?')[1];
   let merchantId = null;
   let deviceId = null;
+  let connectionType = 'DASHBOARD';
   
   if (queryString) {
     const params = new URLSearchParams(queryString);
     merchantId = params.get('merchantId');
-    deviceId = params.get('deviceId') || 'DEVICE-001';
+    deviceId = params.get('deviceId');
+    
+    if (deviceId) {
+      connectionType = 'DEVICE';
+    }
   }
   
   if (!merchantId) {
+    try {
+      ws.send(JSON.stringify({
+        type: 'ERROR',
+        message: 'merchantId required',
+        timestamp: new Date().toISOString()
+      }));
+    } catch (e) {}
     ws.close(1008, 'Missing merchantId');
     return;
   }
   
-  console.log(`🖨️  Merchant device connected: ${deviceId} for ${merchantId}`);
+  // ========== CRITICAL FIX ==========
+  // Buat connection ID UNIK
+  const connectionId = `${connectionType}-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
   
+  // Simpan WebSocket object dengan SEMUA properties
   ws.merchantId = merchantId;
   ws.deviceId = deviceId;
-  ws.connectionType = 'DEVICE';
+  ws.connectionType = connectionType;
+  ws.connectionId = connectionId;
+  ws.isAlive = true;
+  ws.connectedAt = Date.now();
+  ws.lastActivity = Date.now();
   
-  // Store device connection
-  if (!simulationState.merchantDevices.has(merchantId)) {
-    simulationState.merchantDevices.set(merchantId, new Map());
-  }
-  simulationState.merchantDevices.get(merchantId).set(deviceId, ws);
+  // Simpan ke global tracking
+  activeConnections.set(connectionId, ws);
   
-  ws.send(JSON.stringify({
+  console.log(`✅ ${connectionType} connected: ${deviceId || merchantId} [${connectionId}]`);
+  console.log(`📊 Total connections: ${activeConnections.size}`);
+  
+  // ========== FIX: Handle pong PROPERLY ==========
+  ws.on('pong', () => {
+    ws.isAlive = true;
+    ws.lastActivity = Date.now();
+    console.log(`❤️  Heartbeat from ${connectionId}`);
+  });
+  
+  // ========== FIX: Send welcome message ==========
+  const welcomeMessage = connectionType === 'DEVICE' ? {
     type: 'DEVICE_CONNECTED',
     message: `Device ${deviceId} connected`,
     merchantId,
     deviceId,
-    timestamp: new Date().toISOString()
-  }));
+    timestamp: new Date().toISOString(),
+    connectionId
+  } : {
+    type: 'CONNECTED',
+    message: `Dashboard connected for merchant ${merchantId}`,
+    merchantId,
+    timestamp: new Date().toISOString(),
+    connectionId
+  };
   
-  ws.on('close', () => {
-    console.log(`🖨️  Device disconnected: ${deviceId} for ${merchantId}`);
-    const merchantDevices = simulationState.merchantDevices.get(merchantId);
-    if (merchantDevices) {
-      merchantDevices.delete(deviceId);
+  try {
+    ws.send(JSON.stringify(welcomeMessage));
+    console.log(`📤 Sent welcome to ${connectionId}`);
+  } catch (error) {
+    console.error(`❌ Error sending welcome:`, error);
+    return;
+  }
+  
+  // ========== FIX: Handle messages ==========
+  ws.on('message', (data) => {
+    try {
+      ws.lastActivity = Date.now();
+      const msg = JSON.parse(data.toString());
+      
+      if (msg.type === 'PING') {
+        ws.send(JSON.stringify({
+          type: 'PONG',
+          timestamp: new Date().toISOString(),
+          serverTime: Date.now()
+        }));
+      }
+    } catch (error) {
+      console.error('Message error:', error);
     }
+  });
+  
+  // ========== FIX: Handle close ==========
+  ws.on('close', (code, reason) => {
+    console.log(`🔌 ${connectionId} disconnected: ${code} - ${reason}`);
+    activeConnections.delete(connectionId);
+    console.log(`📊 Remaining connections: ${activeConnections.size}`);
+  });
+  
+  ws.on('error', (error) => {
+    console.error(`❌ ${connectionId} error:`, error);
+    activeConnections.delete(connectionId);
+  });
+  
+  // ========== FIX: Send periodic keep-alive ==========
+  const keepAliveInterval = setInterval(() => {
+    if (ws.readyState === 1) {
+      try {
+        ws.send(JSON.stringify({
+          type: 'KEEP_ALIVE',
+          timestamp: new Date().toISOString(),
+          connectionId
+        }));
+      } catch (error) {
+        console.error(`Keep-alive error for ${connectionId}:`, error);
+        clearInterval(keepAliveInterval);
+      }
+    } else {
+      clearInterval(keepAliveInterval);
+    }
+  }, 10000); // Setiap 10 detik
+  
+  // Clean up interval on close
+  ws.on('close', () => {
+    clearInterval(keepAliveInterval);
   });
 });
 
-// Heartbeat for both WebSocket servers
-const interval = setInterval(() => {
-  [wss, deviceWss].forEach(wssInstance => {
-    wssInstance.clients.forEach((ws) => {
-      if (ws.isAlive === false) {
-        return ws.terminate();
+// ========== FIXED HEARTBEAT ==========
+const heartbeatInterval = setInterval(() => {
+  const now = Date.now();
+  let aliveCount = 0;
+  let deadCount = 0;
+  
+  activeConnections.forEach((ws, connectionId) => {
+    try {
+      // Check connection age
+      if (now - ws.connectedAt > 300000) { // 5 minutes max
+        console.log(`⏳ Connection ${connectionId} expired`);
+        ws.close(1000, 'Connection expired');
+        activeConnections.delete(connectionId);
+        return;
       }
+      
+      if (ws.isAlive === false) {
+        console.log(`💀 Terminating dead connection: ${connectionId}`);
+        ws.terminate();
+        activeConnections.delete(connectionId);
+        deadCount++;
+        return;
+      }
+      
       ws.isAlive = false;
-      ws.ping();
-    });
+      
+      if (ws.readyState === 1) {
+        ws.ping();
+        aliveCount++;
+      } else {
+        activeConnections.delete(connectionId);
+      }
+    } catch (error) {
+      console.error(`Heartbeat error for ${connectionId}:`, error);
+      activeConnections.delete(connectionId);
+    }
   });
-}, 30000);
+  
+  console.log(`❤️  Heartbeat: ${aliveCount} alive, ${deadCount} dead, total: ${activeConnections.size}`);
+}, 25000); // 25 detik/ Use configurable interval
 
 // ========== HELPER FUNCTIONS ==========
 
@@ -213,6 +291,74 @@ function generateSignature(data, secretKey) {
 function verifySignature(data, signature, secretKey) {
   const calculatedSignature = generateSignature(data, secretKey);
   return calculatedSignature === signature;
+}
+
+function handleDeviceTransactionApproval(deviceWs, messageData) {
+  const { transactionId, status, authorizationCode } = messageData;
+  
+  console.log(`🖨️  Device ${deviceWs.deviceId} approving transaction ${transactionId}`);
+  
+  // Find transaction
+  let transaction = simulationState.pendingTransactions.get(transactionId) ||
+                   simulationState.approvedTransactions.get(transactionId) ||
+                   simulationState.declinedTransactions.get(transactionId);
+  
+  if (!transaction) {
+    try {
+      deviceWs.send(JSON.stringify({
+        type: 'ERROR',
+        message: `Transaction ${transactionId} not found`,
+        timestamp: new Date().toISOString()
+      }));
+    } catch (e) {
+      console.error('Error sending transaction not found error:', e);
+    }
+    return;
+  }
+  
+  // Update transaction status
+  if (status === 'APPROVED') {
+    transaction.status = 'APPROVED';
+    transaction.authorizationCode = authorizationCode || `AUTH${Date.now().toString().slice(-8)}`;
+    transaction.deviceApprovedAt = new Date().toISOString();
+    transaction.deviceId = deviceWs.deviceId;
+    
+    simulationState.pendingTransactions.delete(transactionId);
+    simulationState.approvedTransactions.set(transactionId, transaction);
+    
+    // Schedule settlement
+    setTimeout(() => {
+      completeSettlement(transactionId);
+    }, 2000);
+    
+  } else if (status === 'DECLINED') {
+    transaction.status = 'DECLINED';
+    transaction.responseMessage = 'DECLINED_BY_MERCHANT';
+    transaction.deviceDeclinedAt = new Date().toISOString();
+    transaction.deviceId = deviceWs.deviceId;
+    
+    simulationState.pendingTransactions.delete(transactionId);
+    simulationState.declinedTransactions.set(transactionId, transaction);
+  }
+  
+  // Update transaction timestamp
+  transaction.updatedAt = new Date().toISOString();
+  
+  // Notify dashboard
+  sendToMerchantDashboard(transaction);
+  
+  // Send confirmation to device
+  try {
+    deviceWs.send(JSON.stringify({
+      type: 'TRANSACTION_PROCESSED',
+      transactionId: transactionId,
+      status: status,
+      timestamp: new Date().toISOString(),
+      message: `Transaction ${status.toLowerCase()} successfully`
+    }));
+  } catch (e) {
+    console.error('Error sending transaction processed confirmation:', e);
+  }
 }
 
 // ========== MULTI-CHANNEL NOTIFICATION DISTRIBUTION ==========
@@ -251,10 +397,8 @@ async function distributeAuthorizationResult(transaction) {
 
 async function sendToPaymentApp(transaction) {
   // Simulate push notification to payment app
-  // In reality: FCM/APNS with device token
   console.log(`📱 [SIM] Push notification to payment app for transaction ${transaction.id}`);
   
-  // Simulate async operation
   await new Promise(resolve => setTimeout(resolve, 100));
   
   const notificationPayload = {
@@ -281,22 +425,50 @@ async function sendToPaymentApp(transaction) {
 }
 
 function sendToMerchantDashboard(transaction) {
+  let notificationType;
+  let title;
+  let message;
+  let color;
+  
+  if (transaction.status === 'APPROVED') {
+    notificationType = 'PAYMENT_APPROVED';
+    title = '✅ Payment Approved';
+    message = `Rp ${transaction.amount.toLocaleString()} from ${transaction.bankCode}`;
+    color = 'green';
+  } else if (transaction.status === 'DECLINED') {
+    notificationType = 'PAYMENT_DECLINED';
+    title = '❌ Payment Declined';
+    message = `Declined: ${transaction.responseMessage}`;
+    color = 'red';
+  } else if (transaction.status === 'PENDING') {
+    notificationType = 'PAYMENT_INITIATED';
+    title = '🔄 Payment Initiated';
+    message = `Rp ${transaction.amount.toLocaleString()} pending approval`;
+    color = 'yellow';
+  } else {
+    return false;
+  }
+  
   const notification = {
-    type: transaction.status === 'APPROVED' ? 'PAYMENT_APPROVED' : 'PAYMENT_DECLINED',
-    title: transaction.status === 'APPROVED' ? '✅ Payment Approved' : '❌ Payment Declined',
-    message: transaction.status === 'APPROVED'
-      ? `Rp ${transaction.amount.toLocaleString()} from ${transaction.bankCode}`
-      : `Declined: ${transaction.responseMessage}`,
+    type: notificationType,
+    title: title,
+    message: message,
     transaction: transaction,
     timestamp: new Date().toISOString(),
-    color: transaction.status === 'APPROVED' ? 'green' : 'red'
+    color: color
   };
   
   let sentCount = 0;
   wss.clients.forEach((client) => {
-    if (client.merchantId === transaction.merchantId && client.readyState === 1) {
-      client.send(JSON.stringify(notification));
-      sentCount++;
+    if (client.connectionType === 'DASHBOARD' && 
+        client.merchantId === transaction.merchantId && 
+        client.readyState === 1) {
+      try {
+        client.send(JSON.stringify(notification));
+        sentCount++;
+      } catch (error) {
+        console.error(`Error sending to dashboard ${client.connectionId}:`, error);
+      }
     }
   });
   
@@ -332,9 +504,13 @@ function sendToMerchantDevice(transaction) {
   let sentCount = 0;
   merchantDevices.forEach((deviceSocket, deviceId) => {
     if (deviceSocket.readyState === 1) {
-      deviceSocket.send(JSON.stringify(deviceMessage));
-      sentCount++;
-      console.log(`🖨️  Sent to device ${deviceId} for merchant ${transaction.merchantId}`);
+      try {
+        deviceSocket.send(JSON.stringify(deviceMessage));
+        sentCount++;
+        console.log(`🖨️  Sent to device ${deviceId} for merchant ${transaction.merchantId}`);
+      } catch (error) {
+        console.error(`Error sending to device ${deviceId}:`, error);
+      }
     }
   });
   
@@ -358,7 +534,7 @@ async function sendToMerchantCallback(transaction) {
     
     console.log(`🌐 Sending callback to ${callbackUrl} for ${transaction.id}`);
     
-    // Simulate HTTP callback (in reality: axios.post)
+    // In production, use axios/fetch
     await new Promise(resolve => setTimeout(resolve, 200));
     console.log(`🌐 Callback sent successfully to ${callbackUrl}`);
     
@@ -469,7 +645,18 @@ function completeSettlement(transactionId) {
     color: 'blue'
   };
   
-  sendToMerchantDashboard(transaction);
+  // Send to dashboard
+  wss.clients.forEach((client) => {
+    if (client.connectionType === 'DASHBOARD' && 
+        client.merchantId === transaction.merchantId && 
+        client.readyState === 1) {
+      try {
+        client.send(JSON.stringify(settlementNotification));
+      } catch (error) {
+        console.error(`Error sending settlement to ${client.connectionId}:`, error);
+      }
+    }
+  });
 }
 
 // ========== SIMULATION ENDPOINTS ==========
@@ -512,12 +699,40 @@ app.post("/api/simulate/switch-callback", async (req, res) => {
   const signature = generateSignature(switchResponse, config.switchSecretKey);
   const timestamp = new Date().toISOString();
   
-  // Send to our own callback endpoint
+  // Store as pending transaction
+  const pendingTransaction = {
+    id: transactionId,
+    merchantId: merchantId,
+    amount: parseFloat(amount),
+    bankCode: bankCode,
+    status: 'PENDING',
+    source: 'SIMULATION',
+    createdAt: new Date().toISOString()
+  };
+  
+  simulationState.pendingTransactions.set(transactionId, pendingTransaction);
+  
+  // Notify dashboard about pending transaction
+  sendToMerchantDashboard(pendingTransaction);
+  
+  // Send to our own callback endpoint after delay
   setTimeout(async () => {
     console.log(`🔄 Sending simulated callback for ${transactionId}`);
     
     try {
-      await fetch(`http://localhost:${PORT}/api/switch/callback`, {
+      // Dynamic import for node-fetch (compatible with both ESM and CommonJS)
+      let fetch;
+      try {
+        fetch = (await import('node-fetch')).default;
+      } catch {
+        // Fallback if node-fetch not available
+        console.log('Using global fetch...');
+        fetch = global.fetch || (() => {
+          throw new Error('Fetch not available');
+        });
+      }
+      
+      await fetch(`https://qris-backend.onrender.com/api/switch/callback`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -546,21 +761,166 @@ app.post("/api/simulate/switch-callback", async (req, res) => {
   });
 });
 
+// ========== DEVICE MANAGEMENT ENDPOINTS ==========
+
+app.get("/api/device/status/:merchantId/:deviceId", (req, res) => {
+  const { merchantId, deviceId } = req.params;
+  
+  const merchantDevices = simulationState.merchantDevices.get(merchantId);
+  const isConnected = merchantDevices && merchantDevices.has(deviceId);
+  
+  // Check in active connections too
+  let connectionData = null;
+  simulationState.activeConnections.forEach((conn) => {
+    if (conn.merchantId === merchantId && conn.deviceId === deviceId) {
+      connectionData = conn;
+    }
+  });
+  
+  res.json({
+    merchantId,
+    deviceId,
+    connected: isConnected,
+    lastSeen: connectionData ? new Date(connectionData.lastActivity).toISOString() : null,
+    connectionId: connectionData ? connectionData.ws.connectionId : null,
+    connectionAge: connectionData ? Date.now() - connectionData.connectedAt : null,
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.post("/api/device/register", (req, res) => {
+  const { merchantId, deviceId, deviceName, deviceType = 'EDC' } = req.body;
+  
+  if (!merchantId || !deviceId) {
+    return res.status(400).json({ error: "Missing merchantId or deviceId" });
+  }
+  
+  console.log(`📝 Registering device: ${deviceId} for merchant ${merchantId}`);
+  
+  res.json({
+    success: true,
+    message: "Device registered successfully",
+    device: {
+      deviceId,
+      merchantId,
+      deviceName: deviceName || `Device ${deviceId}`,
+      deviceType,
+      registeredAt: new Date().toISOString(),
+      status: 'REGISTERED'
+    }
+  });
+});
+
+// ========== TRANSACTION ENDPOINTS ==========
+
+app.get("/api/transactions/:merchantId", (req, res) => {
+  const { merchantId } = req.params;
+  
+  const allTransactions = [
+    ...Array.from(simulationState.pendingTransactions.values()),
+    ...Array.from(simulationState.approvedTransactions.values()),
+    ...Array.from(simulationState.declinedTransactions.values()),
+    ...Array.from(simulationState.settledTransactions.values())
+  ];
+  
+  const merchantTransactions = allTransactions.filter(tx => tx.merchantId === merchantId);
+  
+  res.json({
+    merchantId,
+    count: merchantTransactions.length,
+    transactions: merchantTransactions.sort((a, b) => 
+      new Date(b.timestamp || b.createdAt || b.receivedAt) - new Date(a.timestamp || a.createdAt || a.receivedAt)
+    ),
+    summary: {
+      pending: merchantTransactions.filter(tx => tx.status === 'PENDING').length,
+      approved: merchantTransactions.filter(tx => tx.status === 'APPROVED').length,
+      declined: merchantTransactions.filter(tx => tx.status === 'DECLINED').length,
+      settled: merchantTransactions.filter(tx => tx.settlementStatus === 'COMPLETED').length
+    },
+    timestamp: new Date().toISOString()
+  });
+});
+
+// ========== WEB SOCKET STATUS ENDPOINTS ==========
+
+app.get("/api/websocket/connections", (req, res) => {
+  const connections = Array.from(simulationState.activeConnections.values()).map(conn => ({
+    connectionId: conn.ws.connectionId,
+    merchantId: conn.merchantId,
+    deviceId: conn.deviceId,
+    connectionType: conn.connectionType,
+    connectedAt: new Date(conn.connectedAt).toISOString(),
+    lastActivity: new Date(conn.lastActivity).toISOString(),
+    connectionAge: Date.now() - conn.connectedAt,
+    isAlive: conn.ws.isAlive,
+    readyState: conn.ws.readyState
+  }));
+  
+  res.json({
+    totalConnections: wss.clients.size,
+    activeConnections: connections.length,
+    connections: connections,
+    byType: {
+      dashboard: connections.filter(c => c.connectionType === 'DASHBOARD').length,
+      device: connections.filter(c => c.connectionType === 'DEVICE').length
+    },
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.get("/api/websocket/test/:merchantId", (req, res) => {
+  const { merchantId } = req.params;
+  
+  // Find dashboard connections for this merchant
+  const dashboardConnections = Array.from(wss.clients).filter(
+    client => client.connectionType === 'DASHBOARD' && client.merchantId === merchantId && client.readyState === 1
+  );
+  
+  // Send test message to each connection
+  dashboardConnections.forEach(client => {
+    try {
+      client.send(JSON.stringify({
+        type: 'TEST_MESSAGE',
+        message: 'This is a test message from the server',
+        timestamp: new Date().toISOString()
+      }));
+    } catch (error) {
+      console.error('Error sending test message:', error);
+    }
+  });
+  
+  res.json({
+    success: true,
+    message: `Test message sent to ${dashboardConnections.length} dashboard connections`,
+    connections: dashboardConnections.length,
+    timestamp: new Date().toISOString()
+  });
+});
+
 // ========== EXISTING ENDPOINTS (Maintained) ==========
 
 app.get("/", (req, res) => {
   const dashboardConnections = Array.from(wss.clients).filter(c => c.connectionType === 'DASHBOARD').length;
-  const deviceConnections = Array.from(deviceWss.clients).filter(c => c.connectionType === 'DEVICE').length;
+  const deviceConnections = Array.from(wss.clients).filter(c => c.connectionType === 'DEVICE').length;
+  const totalActive = simulationState.activeConnections.size;
   
   res.json({
     service: "QRIS Payment Gateway",
     version: "4.0.0",
     status: "running",
-    features: ["WebSocket Dashboard", "Device Integration", "Switch Callback", "Multi-channel Notification"],
+    features: [
+      "Enhanced WebSocket Stability", 
+      "Device Integration", 
+      "Switch Callback", 
+      "Multi-channel Notification",
+      "Render.com Optimized",
+      "Connection Tracking"
+    ],
     connections: {
+      total: wss.clients.size,
+      active: totalActive,
       dashboard: dashboardConnections,
-      devices: deviceConnections,
-      total: dashboardConnections + deviceConnections
+      devices: deviceConnections
     },
     simulation: {
       banks: simulationState.mockBanks.length,
@@ -575,28 +935,46 @@ app.get("/", (req, res) => {
     endpoints: {
       switch_callback: "POST /api/switch/callback",
       simulate_callback: "POST /api/simulate/switch-callback",
-      dashboard_ws: "/ws?merchantId=YOUR_ID",
-      device_ws: "/ws/device?merchantId=YOUR_ID&deviceId=DEVICE_ID"
+      websocket: "/ws?merchantId=YOUR_ID (add &deviceId=DEVICE_ID for devices)",
+      device_status: "GET /api/device/status/:merchantId/:deviceId",
+      transactions: "GET /api/transactions/:merchantId",
+      websocket_status: "GET /api/websocket/connections",
+      websocket_test: "GET /api/websocket/test/:merchantId"
+    },
+    documentation: {
+      dashboard: "wss://qris-backend.onrender.com/ws?merchantId=YOUR_ID",
+      device: "wss://qris-backend.onrender.com/ws?merchantId=YOUR_ID&deviceId=DEVICE_ID"
+    },
+    serverInfo: {
+      keepAliveInterval: config.websocketKeepAlive,
+      maxConnectionAge: config.maxConnectionAge,
+      uptime: process.uptime()
     },
     timestamp: new Date().toISOString()
   });
 });
 
 app.get("/health", (req, res) => {
+  const dashboardCount = Array.from(activeConnections.values())
+    .filter(ws => ws.connectionType === 'DASHBOARD').length;
+  
+  const deviceCount = Array.from(activeConnections.values())
+    .filter(ws => ws.connectionType === 'DEVICE').length;
+  
   res.json({
     status: "healthy",
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
-    memory: process.memoryUsage(),
     connections: {
-      dashboard: wss.clients.size,
-      devices: deviceWss.clients.size,
-      merchantDevices: Array.from(simulationState.merchantDevices.keys()).length
-    }
+      total: activeConnections.size,
+      dashboard: dashboardCount,
+      devices: deviceCount,
+      byMerchant: {}
+    },
+    memory: process.memoryUsage()
   });
 });
 
-// Existing endpoints (keep for backward compatibility)
 app.post("/api/payment", (req, res) => {
   const { merchantId, amount, description } = req.body;
   
@@ -628,48 +1006,67 @@ app.post("/api/payment", (req, res) => {
 });
 
 // ========== START SERVER ==========
-server.listen(PORT, () => {
-  console.log('='.repeat(60));
-  console.log('🚀 QRIS PAYMENT GATEWAY v4.0 - SWITCH INTEGRATION');
-  console.log('='.repeat(60));
+server.listen(PORT, '0.0.0.0', () => {
+  console.log('='.repeat(70));
+  console.log('🚀 QRIS PAYMENT GATEWAY v4.0 - ENHANCED STABILITY');
+  console.log('='.repeat(70));
   console.log(`📡 Port: ${PORT}`);
-  console.log(`🌐 HTTP: http://localhost:${PORT}`);
-  console.log(`📊 Dashboard WS: ws://localhost:${PORT}/ws?merchantId=YOUR_ID`);
-  console.log(`🖨️  Device WS: ws://localhost:${PORT}/ws/device?merchantId=YOUR_ID`);
-  console.log(`🏦 Switch Secret: ${config.switchSecretKey.substring(0, 10)}...`);
-  console.log('='.repeat(60));
-  console.log('🎯 NEW FEATURES:');
-  console.log('  • Switch Callback Endpoint');
-  console.log('  • Multi-channel Notification');
-  console.log('  • Merchant Device Integration');
-  console.log('  • Signature Verification');
-  console.log('='.repeat(60));
-  console.log('📡 Test with:');
-  console.log(`  curl -X POST http://localhost:${PORT}/api/simulate/switch-callback`);
-  console.log('='.repeat(60));
+  console.log(`🌐 HTTP: https://qris-backend.onrender.com`);
+  console.log(`📊 Dashboard WS: wss://qris-backend.onrender.com/ws?merchantId=YOUR_ID`);
+  console.log(`🖨️  Device WS: wss://qris-backend.onrender.com/ws?merchantId=YOUR_ID&deviceId=DEVICE_ID`);
+  console.log(`🔐 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`⚡ Keep Alive: ${config.websocketKeepAlive}ms`);
+  console.log(`⏳ Max Connection Age: ${config.maxConnectionAge}ms`);
+  console.log('='.repeat(70));
+  console.log('🛡️  ENHANCED STABILITY FEATURES:');
+  console.log('  • Improved WebSocket heartbeat (25 seconds)');
+  console.log('  • Connection tracking and monitoring');
+  console.log('  • Enhanced error handling');
+  console.log('  • Connection age management');
+  console.log('  • Render.com optimized settings');
+  console.log('='.repeat(70));
+  console.log('📡 Test Commands:');
+  console.log(`  curl -X POST https://qris-backend.onrender.com/api/simulate/switch-callback`);
+  console.log(`  wscat -c "wss://qris-backend.onrender.com/ws?merchantId=MER001"`);
+  console.log(`  wscat -c "wss://qris-backend.onrender.com/ws?merchantId=MER001&deviceId=EDC001"`);
+  console.log('='.repeat(70));
 });
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
   console.log('🛑 Shutting down gracefully...');
   
-  [wss, deviceWss].forEach(wssInstance => {
-    wssInstance.clients.forEach(client => {
-      if (client.readyState === 1) {
+  clearInterval(heartbeatInterval);
+  
+  wss.clients.forEach(client => {
+    if (client.readyState === 1) {
+      try {
         client.send(JSON.stringify({
           type: 'SERVER_SHUTDOWN',
           message: 'Server maintenance',
           timestamp: new Date().toISOString()
         }));
         client.close();
+      } catch (error) {
+        console.error('Error closing client:', error);
       }
-    });
-    
-    wssInstance.close();
+    }
+  });
+  
+  wss.close(() => {
+    console.log('✅ WebSocket server closed');
   });
   
   server.close(() => {
-    console.log('✅ Server stopped');
+    console.log('✅ HTTP server stopped');
     process.exit(0);
   });
+});
+
+// Clean up intervals on exit
+process.on('exit', () => {
+  if (heartbeatInterval) {
+    clearInterval(heartbeatInterval);
+  }
+  console.log('🧹 Cleaned up intervals');
 });
