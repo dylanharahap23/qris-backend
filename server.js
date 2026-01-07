@@ -1,5 +1,4 @@
-﻿// server.js - QRIS Payment Gateway v6.0 with Merchant Notification Focus
-const express = require("express");
+﻿const express = require("express");
 const cors = require("cors");
 const bodyParser = require("body-parser");
 const http = require('http');
@@ -10,6 +9,27 @@ const fs = require('fs');
 const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 10000;
+
+// ========== RENDER HEALTH CHECK FIX ==========
+// Render akan cek endpoint ini
+app.get("/health", (req, res) => {
+  console.log('🏥 Health check requested');
+  res.status(200).json({
+    status: "healthy",
+    service: "QRIS Payment Gateway v6.0",
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    connections: 0, // Akan diupdate nanti
+    version: "6.0.0"
+  });
+});
+
+app.get("/ready", (req, res) => {
+  res.status(200).json({
+    status: "ready",
+    timestamp: new Date().toISOString()
+  });
+});
 
 // ========== ADVANCED CONFIGURATION ==========
 const config = {
@@ -28,7 +48,6 @@ const config = {
     BNI: { name: 'Bank BNI', callbackUrl: 'https://api.bni.co.id/qris', weight: 82 }
   }
 };
-
 // ========== MERCHANT NOTIFICATION TRACKER (SheerID Style) ==========
 class MerchantNotificationTracker {
   constructor() {
