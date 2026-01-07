@@ -1,630 +1,700 @@
-﻿// server.js - QRIS Payment Gateway v4.0 with FIXED WebSocket for Render.com
+﻿// server.js - QRIS Payment Gateway v6.0 with Merchant Notification Focus
 const express = require("express");
 const cors = require("cors");
 const bodyParser = require("body-parser");
 const http = require('http');
 const WebSocket = require('ws');
 const crypto = require('crypto');
+const fs = require('fs');
 
 const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 10000;
 
-// ========== CONFIGURATION ==========
+// ========== ADVANCED CONFIGURATION ==========
 const config = {
   switchSecretKey: process.env.SWITCH_SECRET_KEY || 'simulated-switch-secret-key-2024',
-  merchantCallbackUrls: new Map([
-    ['MER001', 'https://merchant001.com/api/callback'],
-    ['MER002', 'https://merchant002.com/api/callback'],
-  ]),
-  pushNotificationEnabled: true,
-  merchantDeviceEnabled: true,
-  websocketKeepAlive: 25000, // 25 seconds for Render.com
-  maxConnectionAge: 300000   // 5 minutes
+  websocketKeepAlive: 25000,
+  maxConnectionAge: 300000,
+  retryConfig: {
+    maxRetries: 3,
+    initialDelay: 1000,
+    maxDelay: 10000
+  },
+  banks: {
+    BCA: { name: 'Bank BCA', callbackUrl: 'https://api.bca.co.id/qris/callback', weight: 90 },
+    MANDIRI: { name: 'Bank Mandiri', callbackUrl: 'https://api.bankmandiri.co.id/qris', weight: 85 },
+    BRI: { name: 'Bank BRI', callbackUrl: 'https://api.bri.co.id/qris-notif', weight: 88 },
+    BNI: { name: 'Bank BNI', callbackUrl: 'https://api.bni.co.id/qris', weight: 82 }
+  }
 };
 
-// ========== SIMULATION STATE ==========
+// ========== MERCHANT NOTIFICATION TRACKER (SheerID Style) ==========
+class MerchantNotificationTracker {
+  constructor() {
+    this.filePath = './merchant_stats.json';
+    this.data = this.loadData();
+  }
+
+  loadData() {
+    try {
+      if (fs.existsSync(this.filePath)) {
+        const raw = fs.readFileSync(this.filePath, 'utf8');
+        return JSON.parse(raw);
+      }
+    } catch (e) {
+      console.log('📊 New stats file created');
+    }
+    return {
+      total: 0,
+      delivered: 0,
+      failed: 0,
+      merchants: {},
+      banks: {},
+      lastUpdated: new Date().toISOString()
+    };
+  }
+
+  saveData() {
+    try {
+      fs.writeFileSync(this.filePath, JSON.stringify(this.data, null, 2));
+    } catch (e) {
+      console.error('❌ Failed to save stats:', e.message);
+    }
+  }
+
+  record(merchantId, bankCode, success) {
+    this.data.total++;
+    success ? this.data.delivered++ : this.data.failed++;
+
+    // Merchant stats
+    if (!this.data.merchants[merchantId]) {
+      this.data.merchants[merchantId] = { delivered: 0, failed: 0 };
+    }
+    success ? this.data.merchants[merchantId].delivered++ 
+            : this.data.merchants[merchantId].failed++;
+
+    // Bank stats
+    if (!this.data.banks[bankCode]) {
+      this.data.banks[bankCode] = { delivered: 0, failed: 0 };
+    }
+    success ? this.data.banks[bankCode].delivered++ 
+            : this.data.banks[bankCode].failed++;
+
+    this.data.lastUpdated = new Date().toISOString();
+    
+    // Save every 5 records
+    if (this.data.total % 5 === 0) {
+      this.saveData();
+      console.log(`📊 Notif Stats: ${this.data.delivered}/${this.data.total} (${this.getSuccessRate()}%)`);
+    }
+  }
+
+  getSuccessRate() {
+    return this.data.total ? (this.data.delivered / this.data.total * 100).toFixed(1) : 0;
+  }
+
+  getMerchantRate(merchantId) {
+    const m = this.data.merchants[merchantId];
+    if (!m || (m.delivered + m.failed) === 0) return 0;
+    return (m.delivered / (m.delivered + m.failed) * 100).toFixed(1);
+  }
+
+  getBankRate(bankCode) {
+    const b = this.data.banks[bankCode];
+    if (!b || (b.delivered + b.failed) === 0) return 0;
+    return (b.delivered / (b.delivered + b.failed) * 100).toFixed(1);
+  }
+
+  getSummary() {
+    return {
+      total: this.data.total,
+      delivered: this.data.delivered,
+      failed: this.data.failed,
+      successRate: this.getSuccessRate(),
+      merchants: this.data.merchants,
+      banks: this.data.banks,
+      lastUpdated: this.data.lastUpdated
+    };
+  }
+}
+
+// ========== QRIS PAYMENT PARSER ==========
+function parseQRISString(qrisString) {
+  console.log(`🔍 Parsing QRIS: ${qrisString.substring(0, 100)}...`);
+  
+  try {
+    const result = {
+      isQRIS: qrisString.includes('ID.CO.QRIS.WWW'),
+      merchantId: null,
+      merchantName: null,
+      amount: null,
+      bankCode: null,
+      city: null
+    };
+
+    // Parse merchant name (ID 59)
+    const merchantNameMatch = qrisString.match(/59(\d{2})(.+?)(?=\d{2}[A-Z]{2}|$)/);
+    if (merchantNameMatch) {
+      result.merchantName = merchantNameMatch[2];
+    }
+
+    // Parse amount (ID 54)
+    const amountMatch = qrisString.match(/54(\d{2})(\d+\.?\d*)/);
+    if (amountMatch) {
+      result.amount = parseFloat(amountMatch[2]);
+    }
+
+    // Parse city (ID 60)
+    const cityMatch = qrisString.match(/60(\d{2})(.+?)(?=\d{2}[A-Z]{2}|$)/);
+    if (cityMatch) {
+      result.city = cityMatch[2];
+    }
+
+    // Parse bank code
+    if (qrisString.includes('ID.CO.BCA.')) {
+      result.bankCode = 'BCA';
+      const bcaMatch = qrisString.match(/ID\.CO\.BCA\.(?:WWW)?(\d+)/);
+      if (bcaMatch) {
+        result.merchantId = `BCA${bcaMatch[1].substring(0, 8)}`;
+      }
+    } else if (qrisString.includes('ID.CO.BRI.')) {
+      result.bankCode = 'BRI';
+    } else if (qrisString.includes('ID.CO.BNI.')) {
+      result.bankCode = 'BNI';
+    } else if (qrisString.includes('ID.CO.MANDIRI.')) {
+      result.bankCode = 'MANDIRI';
+    } else if (qrisString.includes('ID.CO.SHOPEE.WWW')) {
+      result.bankCode = 'SHOPEEPAY';
+      const shopeeMatch = qrisString.match(/0118(\d+)/);
+      if (shopeeMatch) {
+        result.merchantId = `SHOPEE${shopeeMatch[1].substring(0, 8)}`;
+      }
+    } else {
+      result.bankCode = 'QRIS';
+    }
+
+    // Default merchant ID jika tidak ditemukan
+    if (!result.merchantId) {
+      result.merchantId = `QRIS${Date.now().toString().slice(-8)}`;
+    }
+
+    console.log(`✅ QRIS Parsed:`, {
+      merchant: result.merchantName || 'Unknown',
+      amount: result.amount ? `Rp ${result.amount.toLocaleString()}` : 'N/A',
+      city: result.city || 'Unknown',
+      bank: result.bankCode
+    });
+
+    return result;
+
+  } catch (error) {
+    console.error('❌ QRIS parse error:', error);
+    return {
+      isQRIS: true,
+      merchantId: 'QRIS00001',
+      merchantName: 'QRIS Merchant',
+      amount: 0,
+      bankCode: 'QRIS',
+      city: 'Unknown'
+    };
+  }
+}
+
+// ========== RETRY HANDLER (Exponential Backoff) ==========
+class RetryHandler {
+  constructor(config) {
+    this.maxRetries = config.maxRetries;
+    this.initialDelay = config.initialDelay;
+    this.maxDelay = config.maxDelay;
+  }
+
+  async executeWithRetry(operation, operationName = 'Operation') {
+    let lastError;
+    
+    for (let attempt = 0; attempt < this.maxRetries; attempt++) {
+      try {
+        if (attempt > 0) {
+          const delay = this.calculateBackoff(attempt);
+          console.log(`🔄 ${operationName} retry ${attempt}/${this.maxRetries} in ${delay}ms`);
+          await this.sleep(delay);
+        }
+        
+        const result = await operation();
+        if (result.success !== false) {
+          if (attempt > 0) console.log(`✅ ${operationName} succeeded on attempt ${attempt + 1}`);
+          return result;
+        }
+        
+        lastError = new Error(result.error || 'Operation failed');
+        
+      } catch (error) {
+        lastError = error;
+        console.warn(`⚠️ ${operationName} attempt ${attempt + 1} failed:`, error.message);
+      }
+    }
+    
+    throw lastError || new Error(`${operationName} failed after ${this.maxRetries} attempts`);
+  }
+
+  calculateBackoff(attempt) {
+    const delay = this.initialDelay * Math.pow(2, attempt);
+    return Math.min(delay, this.maxDelay);
+  }
+
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+}
+
+// ========== GLOBAL INSTANCES ==========
+const merchantTracker = new MerchantNotificationTracker();
+const retryHandler = new RetryHandler(config.retryConfig);
+
 const simulationState = {
-  // Transaction storage
   pendingTransactions: new Map(),
   approvedTransactions: new Map(),
   declinedTransactions: new Map(),
   settledTransactions: new Map(),
-  
-  // Merchant device connections (for EDC/printer simulation)
   merchantDevices: new Map(),
-  
-  // Connection tracking - HANYA SATU INI YANG DIGUNAKAN
-  activeConnections: new Map(),
-  
-  // Mock data
-  mockBanks: [
-    { code: 'BCA', name: 'Bank Central Asia', processingTime: 3000, successRate: 0.95 },
-    { code: 'MANDIRI', name: 'Bank Mandiri', processingTime: 4000, successRate: 0.93 },
-    { code: 'BRI', name: 'Bank Rakyat Indonesia', processingTime: 3500, successRate: 0.94 },
-    { code: 'BNI', name: 'Bank Negara Indonesia', processingTime: 3200, successRate: 0.92 },
-    { code: 'CIMB', name: 'CIMB Niaga', processingTime: 3800, successRate: 0.91 },
-    { code: 'DANA', name: 'DANA', processingTime: 2000, successRate: 0.96 },
-    { code: 'GOPAY', name: 'GoPay', processingTime: 1500, successRate: 0.97 },
-    { code: 'OVO', name: 'OVO', processingTime: 1800, successRate: 0.96 },
-    { code: 'SHOPEEPAY', name: 'ShopeePay', processingTime: 1700, successRate: 0.95 },
-    { code: 'LINKAJA', name: 'LinkAja', processingTime: 1900, successRate: 0.94 },
-    { code: 'QRIS', name: 'QRIS', processingTime: 2500, successRate: 0.98 },
-  ],
-  
-  mockCustomers: [
-    { account: '1234567890', bank: 'BCA', balance: 5000000, name: 'John Doe', riskLevel: 'LOW' },
-    { account: '0987654321', bank: 'MANDIRI', balance: 3000000, name: 'Jane Smith', riskLevel: 'LOW' },
-    { account: '1122334455', bank: 'BRI', balance: 7500000, name: 'Bob Wilson', riskLevel: 'MEDIUM' },
-    { account: '5566778899', bank: 'OVO', balance: 2500000, name: 'Alice Brown', riskLevel: 'LOW' },
-    { account: '6677889900', bank: 'GOPAY', balance: 1500000, name: 'Charlie Davis', riskLevel: 'LOW' },
-    { account: '7788990011', bank: 'SHOPEEPAY', balance: 1800000, name: 'Eve Johnson', riskLevel: 'LOW' },
-  ]
+  activeConnections: new Map()
 };
 
 // ========== MIDDLEWARE ==========
 app.use(cors({ 
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-switch-signature', 'x-switch-timestamp'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-switch-signature', 'x-switch-timestamp', 'x-bank-code'],
   credentials: true
 }));
-app.use(bodyParser.json());
+app.use(bodyParser.json({ limit: '10mb' }));
 app.use(express.json());
 
-// Handle preflight requests
-app.options('*', cors());
+// ========== ENHANCED WEB SOCKET ==========
+const wss = new WebSocket.Server({ server, path: '/ws', clientTracking: true });
 
-// ========== FIXED WEB SOCKET ENDPOINT ==========
-const wss = new WebSocket.Server({ 
-  server, 
-  path: '/ws',
-  clientTracking: true,
-  perMessageDeflate: false
-});
+wss.on('connection', (ws, req) => {
+  const params = new URLSearchParams(req.url.split('?')[1]);
+  const merchantId = params.get('merchantId');
+  const deviceId = params.get('deviceId');
+  const connectionType = deviceId ? 'DEVICE' : 'DASHBOARD';
 
-wss.on('connection', function connection(ws, req) {
-  console.log('🔌 New WebSocket client connecting...');
-  
-  const url = req.url || '';
-  const queryString = url.split('?')[1];
-  let merchantId = null;
-  let deviceId = null;
-  let connectionType = 'DASHBOARD';
-  
-  if (queryString) {
-    const params = new URLSearchParams(queryString);
-    merchantId = params.get('merchantId');
-    deviceId = params.get('deviceId');
-    
-    if (deviceId) {
-      connectionType = 'DEVICE';
-    }
-  }
-  
   if (!merchantId) {
-    try {
-      ws.send(JSON.stringify({
-        type: 'ERROR',
-        message: 'merchantId required',
-        timestamp: new Date().toISOString()
-      }));
-    } catch (e) {}
     ws.close(1008, 'Missing merchantId');
     return;
   }
+
+  const connectionId = `${connectionType}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   
-  // Buat connection ID UNIK
-  const connectionId = `${connectionType}-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
-  
-  // Set properties pada WebSocket object
   ws.merchantId = merchantId;
   ws.deviceId = deviceId;
   ws.connectionType = connectionType;
   ws.connectionId = connectionId;
   ws.connectedAt = Date.now();
   ws.lastActivity = Date.now();
-  
-  // SIMPAN KE SATU TEMPAT SAJA: simulationState.activeConnections
+
   simulationState.activeConnections.set(connectionId, ws);
-  
-  console.log(`✅ ${connectionType} connected: ${deviceId || merchantId} [${connectionId}]`);
-  console.log(`📊 Total connections: ${simulationState.activeConnections.size}`);
-  
-  // Send welcome message
-  const welcomeMessage = connectionType === 'DEVICE' ? {
-    type: 'DEVICE_CONNECTED',
-    message: `Device ${deviceId} connected`,
-    merchantId,
-    deviceId,
-    timestamp: new Date().toISOString(),
-    connectionId,
-    note: 'Send PING messages to keep connection alive'
-  } : {
-    type: 'CONNECTED',
-    message: `Dashboard connected for merchant ${merchantId}`,
-    merchantId,
-    timestamp: new Date().toISOString(),
-    connectionId,
-    note: 'Send PING messages to keep connection alive'
-  };
-  
-  try {
-    ws.send(JSON.stringify(welcomeMessage));
-    console.log(`📤 Sent welcome to ${connectionId}`);
-  } catch (error) {
-    console.error(`❌ Error sending welcome:`, error);
-    return;
-  }
-  
-  // Handle incoming messages
-  ws.on('message', (data) => {
-    try {
-      ws.lastActivity = Date.now();
-      const msg = JSON.parse(data.toString());
-      
-      console.log(`📨 Received from ${connectionId}: ${msg.type}`);
-      
-      if (msg.type === 'PING') {
-        // Balas dengan PONG
-        ws.send(JSON.stringify({
-          type: 'PONG',
-          timestamp: new Date().toISOString(),
-          serverTime: Date.now()
-        }));
-      }
-      
-      // Handle transaction approval from device
-      if (connectionType === 'DEVICE' && msg.type === 'APPROVE_TRANSACTION') {
-        handleDeviceTransactionApproval(ws, msg);
-      }
-      
-    } catch (error) {
-      console.error('Message parsing error:', error);
-    }
-  });
-  
-  // Handle close
-  ws.on('close', (code, reason) => {
-    console.log(`🔌 ${connectionId} disconnected: ${code} - ${reason || 'No reason'}`);
-    
-    // HAPUS DARI SATU TEMPAT SAJA
-    simulationState.activeConnections.delete(connectionId);
-    
-    // Hapus dari device connections jika ini device
-    if (connectionType === 'DEVICE' && deviceId) {
-      const merchantDevices = simulationState.merchantDevices.get(merchantId);
-      if (merchantDevices) {
-        merchantDevices.delete(deviceId);
-      }
-    }
-    
-    console.log(`📊 Remaining connections: ${simulationState.activeConnections.size}`);
-  });
-  
-  ws.on('error', (error) => {
-    console.error(`❌ ${connectionId} error:`, error.message);
-    simulationState.activeConnections.delete(connectionId);
-  });
-  
-  // Store device connection jika ini device
+
+  console.log(`✅ ${connectionType} connected: ${deviceId || merchantId} [${connectionId}] (Total: ${simulationState.activeConnections.size})`);
+
+  // Store device connection
   if (connectionType === 'DEVICE') {
     if (!simulationState.merchantDevices.has(merchantId)) {
       simulationState.merchantDevices.set(merchantId, new Map());
     }
     simulationState.merchantDevices.get(merchantId).set(deviceId, ws);
   }
+
+  // Send welcome message
+  safeSend(ws, {
+    type: 'CONNECTED',
+    message: `${connectionType} connected successfully`,
+    merchantId,
+    deviceId,
+    connectionId,
+    timestamp: new Date().toISOString(),
+    note: 'Send PING every 10s to keep alive'
+  });
+
+  ws.on('message', (data) => {
+    try {
+      ws.lastActivity = Date.now();
+      const msg = JSON.parse(data.toString());
+
+      switch (msg.type) {
+        case 'PING':
+          safeSend(ws, { type: 'PONG', timestamp: new Date().toISOString() });
+          break;
+        case 'REQUEST_STATS':
+          safeSend(ws, {
+            type: 'STATS_UPDATE',
+            stats: merchantTracker.getSummary(),
+            connections: simulationState.activeConnections.size,
+            timestamp: new Date().toISOString()
+          });
+          break;
+      }
+    } catch (error) {
+      console.error('WebSocket message error:', error);
+    }
+  });
+
+  ws.on('close', () => {
+    simulationState.activeConnections.delete(connectionId);
+    
+    if (connectionType === 'DEVICE' && merchantId && deviceId) {
+      const merchantDevices = simulationState.merchantDevices.get(merchantId);
+      if (merchantDevices) merchantDevices.delete(deviceId);
+    }
+    
+    console.log(`🔌 ${connectionId} disconnected (Remaining: ${simulationState.activeConnections.size})`);
+  });
+
+  ws.on('error', (error) => {
+    console.error(`❌ ${connectionId} error:`, error.message);
+    simulationState.activeConnections.delete(connectionId);
+  });
 });
 
-// ========== FIXED HEARTBEAT (APP-LEVEL PING) ==========
-const heartbeatInterval = setInterval(() => {
+function safeSend(ws, data) {
+  if (ws.readyState === 1) {
+    try {
+      ws.send(JSON.stringify(data));
+    } catch (error) {
+      console.error('Send error:', error);
+    }
+  }
+}
+
+// ========== HEARTBEAT SYSTEM ==========
+setInterval(() => {
   const now = Date.now();
-  let activeCount = 0;
-  let expiredCount = 0;
-  
+  let active = 0;
+  let expired = 0;
+
   simulationState.activeConnections.forEach((ws, connectionId) => {
     try {
-      // Cek jika connection masih open
-      if (ws.readyState !== WebSocket.OPEN) {
+      if (ws.readyState !== 1) {
         simulationState.activeConnections.delete(connectionId);
         return;
       }
-      
-      // Cek connection age (max 5 menit)
+
       if (now - ws.connectedAt > config.maxConnectionAge) {
-        console.log(`⏳ Connection expired: ${connectionId}`);
         ws.close(1000, 'Connection expired');
         simulationState.activeConnections.delete(connectionId);
-        expiredCount++;
+        expired++;
         return;
       }
-      
-      // Kirim APP-LEVEL PING (bukan WebSocket protocol ping)
-      ws.send(JSON.stringify({
-        type: 'SERVER_PING',
+
+      safeSend(ws, {
+        type: 'HEARTBEAT',
         timestamp: new Date().toISOString(),
         connectionId: ws.connectionId
-      }));
-      
-      activeCount++;
-      
+      });
+
+      active++;
     } catch (error) {
       console.error(`Heartbeat error for ${connectionId}:`, error.message);
       simulationState.activeConnections.delete(connectionId);
     }
   });
-  
-  console.log(`❤️  Heartbeat: ${activeCount} active, ${expiredCount} expired, total: ${simulationState.activeConnections.size}`);
+
+  if (active > 0 || expired > 0) {
+    console.log(`❤️  Heartbeat: ${active} active, ${expired} expired, total: ${simulationState.activeConnections.size}`);
+  }
 }, config.websocketKeepAlive);
 
 // ========== HELPER FUNCTIONS ==========
+function generateSignature(data, secretKey) {
+  return crypto.createHmac('sha256', secretKey)
+    .update(JSON.stringify(data))
+    .digest('hex');
+}
 
 function mapResponseCodeToStatus(code) {
-  const responseCodes = {
+  const codes = {
     '00': { status: 'APPROVED', message: 'APPROVED' },
-    '01': { status: 'REFERRAL', message: 'REFER TO ISSUER' },
     '51': { status: 'DECLINED', message: 'INSUFFICIENT FUNDS' },
     '55': { status: 'DECLINED', message: 'INCORRECT PIN' },
-    '57': { status: 'DECLINED', message: 'TRANSACTION NOT PERMITTED' },
-    '58': { status: 'DECLINED', message: 'TRANSACTION NOT PERMITTED TO TERMINAL' },
-    '61': { status: 'DECLINED', message: 'EXCEEDS WITHDRAWAL LIMIT' },
-    '65': { status: 'DECLINED', message: 'EXCEEDS LIMIT' },
-    '75': { status: 'DECLINED', message: 'EXCEEDS PIN TRIES' },
     '91': { status: 'DECLINED', message: 'ISSUER/SWITCH INOPERATIVE' },
     '96': { status: 'DECLINED', message: 'SYSTEM MALFUNCTION' }
   };
-  
-  return responseCodes[code] || { status: 'DECLINED', message: 'DECLINED' };
+  return codes[code] || { status: 'DECLINED', message: 'DECLINED' };
 }
 
-function generateSignature(data, secretKey) {
-  const hmac = crypto.createHmac('sha256', secretKey);
-  hmac.update(JSON.stringify(data));
-  return hmac.digest('hex');
-}
-
-function verifySignature(data, signature, secretKey) {
-  const calculatedSignature = generateSignature(data, secretKey);
-  return calculatedSignature === signature;
-}
-
-function handleDeviceTransactionApproval(deviceWs, messageData) {
-  const { transactionId, status, authorizationCode } = messageData;
+// ========== MERCHANT NOTIFICATION SYSTEM ==========
+async function notifyMerchant(transaction) {
+  console.log(`📨 Notifying merchant: ${transaction.merchantId} for ${transaction.id}`);
   
-  console.log(`🖨️  Device ${deviceWs.deviceId} approving transaction ${transactionId}`);
-  
-  // Find transaction
-  let transaction = simulationState.pendingTransactions.get(transactionId) ||
-                   simulationState.approvedTransactions.get(transactionId) ||
-                   simulationState.declinedTransactions.get(transactionId);
-  
-  if (!transaction) {
-    try {
-      deviceWs.send(JSON.stringify({
-        type: 'ERROR',
-        message: `Transaction ${transactionId} not found`,
-        timestamp: new Date().toISOString()
-      }));
-    } catch (e) {
-      console.error('Error sending transaction not found error:', e);
-    }
-    return;
-  }
-  
-  // Update transaction status
-  if (status === 'APPROVED') {
-    transaction.status = 'APPROVED';
-    transaction.authorizationCode = authorizationCode || `AUTH${Date.now().toString().slice(-8)}`;
-    transaction.deviceApprovedAt = new Date().toISOString();
-    transaction.deviceId = deviceWs.deviceId;
-    
-    simulationState.pendingTransactions.delete(transactionId);
-    simulationState.approvedTransactions.set(transactionId, transaction);
-    
-    // Schedule settlement
-    setTimeout(() => {
-      completeSettlement(transactionId);
-    }, 2000);
-    
-  } else if (status === 'DECLINED') {
-    transaction.status = 'DECLINED';
-    transaction.responseMessage = 'DECLINED_BY_MERCHANT';
-    transaction.deviceDeclinedAt = new Date().toISOString();
-    transaction.deviceId = deviceWs.deviceId;
-    
-    simulationState.pendingTransactions.delete(transactionId);
-    simulationState.declinedTransactions.set(transactionId, transaction);
-  }
-  
-  // Update transaction timestamp
-  transaction.updatedAt = new Date().toISOString();
-  
-  // Notify dashboard
-  sendToMerchantDashboard(transaction);
-  
-  // Send confirmation to device
-  try {
-    deviceWs.send(JSON.stringify({
-      type: 'TRANSACTION_PROCESSED',
-      transactionId: transactionId,
-      status: status,
-      timestamp: new Date().toISOString(),
-      message: `Transaction ${status.toLowerCase()} successfully`
-    }));
-  } catch (e) {
-    console.error('Error sending transaction processed confirmation:', e);
-  }
-}
-
-// ========== MULTI-CHANNEL NOTIFICATION DISTRIBUTION ==========
-
-async function distributeAuthorizationResult(transaction) {
-  console.log(`📨 Distributing authorization result for ${transaction.id}`);
-  
-  const distributionResults = {
-    paymentApp: false,
-    merchantDashboard: false,
-    merchantDevice: false,
-    merchantCallback: false
+  const results = {
+    dashboard: false,
+    device: false
   };
-  
+
   try {
-    // **URGENT: Hanya distribusi ke merchant, TIDAK ke payment app**
-    // Karena Shopee sudah kasih notifikasi ke user
+    // 1. Dashboard notification
+    results.dashboard = sendToMerchantDashboard(transaction);
     
-    // 1️⃣ Send to Merchant Dashboard (WebSocket) - PRIORITAS
-    distributionResults.merchantDashboard = sendToMerchantDashboard(transaction);
+    // 2. Device notification (printer/EDC)
+    results.device = sendToMerchantDevice(transaction);
     
-    // 2️⃣ Send to Merchant Device (EDC/Printer) - PRIORITAS
-    distributionResults.merchantDevice = sendToMerchantDevice(transaction);
+    // 3. Track success rate
+    merchantTracker.record(
+      transaction.merchantId,
+      transaction.bankCode,
+      results.dashboard || results.device
+    );
     
-    // 3️⃣ Send to Merchant Callback URL (HTTP) - opsional
-    if (config.pushNotificationEnabled) {
-      distributionResults.merchantCallback = await sendToMerchantCallback(transaction);
-    }
+    console.log(`✅ Merchant notification:`, {
+      dashboard: results.dashboard ? '✅' : '❌',
+      device: results.device ? '✅' : '❌',
+      successRate: `${merchantTracker.getMerchantRate(transaction.merchantId)}%`
+    });
     
-    // 4️⃣ Skip payment app notification (sudah dari Shopee)
-    
-    console.log(`✅ Distribution completed for ${transaction.id}:`, distributionResults);
+    return results;
     
   } catch (error) {
-    console.error(`❌ Distribution error for ${transaction.id}:`, error);
+    console.error(`❌ Merchant notification failed for ${transaction.id}:`, error);
+    merchantTracker.record(transaction.merchantId, transaction.bankCode, false);
+    return results;
   }
-  
-  return distributionResults;
-}
-
-async function sendToPaymentApp(transaction) {
-  // Simulate push notification to payment app
-  console.log(`📱 [SIM] Push notification to payment app for transaction ${transaction.id}`);
-  
-  await new Promise(resolve => setTimeout(resolve, 100));
-  
-  const notificationPayload = {
-    to: transaction.deviceToken || 'simulated-device-token',
-    notification: {
-      title: transaction.status === 'APPROVED' ? '✅ Payment Successful' : '❌ Payment Failed',
-      body: transaction.status === 'APPROVED' 
-        ? `Rp ${transaction.amount.toLocaleString()} paid successfully`
-        : `Payment failed: ${transaction.responseMessage}`,
-      sound: 'default'
-    },
-    data: {
-      type: 'PAYMENT_RESULT',
-      transactionId: transaction.id,
-      status: transaction.status,
-      amount: transaction.amount.toString(),
-      merchantId: transaction.merchantId,
-      timestamp: new Date().toISOString()
-    }
-  };
-  
-  console.log(`📱 Push notification payload:`, JSON.stringify(notificationPayload, null, 2));
-  return true;
 }
 
 function sendToMerchantDashboard(transaction) {
-  let notificationType;
-  let title;
-  let message;
-  let color;
-  
-  if (transaction.status === 'APPROVED') {
-    notificationType = 'PAYMENT_APPROVED';
-    title = '✅ Payment Approved';
-    message = `Rp ${transaction.amount.toLocaleString()} from ${transaction.bankCode}`;
-    color = 'green';
-  } else if (transaction.status === 'DECLINED') {
-    notificationType = 'PAYMENT_DECLINED';
-    title = '❌ Payment Declined';
-    message = `Declined: ${transaction.responseMessage}`;
-    color = 'red';
-  } else if (transaction.status === 'PENDING') {
-    notificationType = 'PAYMENT_INITIATED';
-    title = '🔄 Payment Initiated';
-    message = `Rp ${transaction.amount.toLocaleString()} pending approval`;
-    color = 'yellow';
-  } else {
-    return false;
-  }
-  
   const notification = {
-    type: notificationType,
-    title: title,
-    message: message,
-    transaction: transaction,
+    type: 'PAYMENT_APPROVED',
+    title: '✅ Payment Successful',
+    message: `Rp ${transaction.amount.toLocaleString()} received via ${transaction.bankName}`,
+    transaction: {
+      id: transaction.id,
+      amount: transaction.amount,
+      status: transaction.status,
+      authCode: transaction.authorizationCode,
+      time: transaction.transactionTime,
+      merchantName: transaction.merchantName,
+      bankName: transaction.bankName,
+      customerName: transaction.customerName
+    },
     timestamp: new Date().toISOString(),
-    color: color
+    urgent: true
   };
-  
+
   let sentCount = 0;
-  
-  // Gunakan simulationState.activeConnections untuk mencari client
-  simulationState.activeConnections.forEach((client) => {
+  simulationState.activeConnections.forEach(client => {
     if (client.connectionType === 'DASHBOARD' && 
         client.merchantId === transaction.merchantId && 
         client.readyState === 1) {
-      try {
-        client.send(JSON.stringify(notification));
-        sentCount++;
-      } catch (error) {
-        console.error(`Error sending to dashboard ${client.connectionId}:`, error);
-      }
+      safeSend(client, notification);
+      sentCount++;
     }
   });
-  
-  console.log(`📊 Dashboard notification sent to ${transaction.merchantId}: ${sentCount} clients`);
+
+  console.log(`📊 Dashboard notification: ${sentCount} clients`);
   return sentCount > 0;
 }
 
 function sendToMerchantDevice(transaction) {
   const merchantDevices = simulationState.merchantDevices.get(transaction.merchantId);
   if (!merchantDevices || merchantDevices.size === 0) {
-    console.log(`🖨️  No devices connected for merchant ${transaction.merchantId}`);
+    console.log(`📱 No devices for ${transaction.merchantId}`);
     return false;
   }
-  
-  // **LANGSUNG KIRIM PERINTAH PRINT**
+
+  // Format receipt untuk printer
+  const receipt = `
+================================
+        PAYMENT SUCCESS
+================================
+Merchant: ${transaction.merchantName}
+Transaction ID: ${transaction.id}
+Time: ${new Date(transaction.transactionTime).toLocaleTimeString()}
+--------------------------------
+Amount: Rp ${transaction.amount.toLocaleString()}
+Bank: ${transaction.bankName}
+Payment: QRIS
+--------------------------------
+Auth Code: ${transaction.authorizationCode}
+RRN: ${transaction.rrn}
+STAN: ${transaction.stan}
+Customer: ${transaction.customerName}
+Location: ${transaction.city}
+================================
+        THANK YOU
+================================
+`;
+
   const deviceMessage = {
     type: 'PAYMENT_SUCCESS',
     command: 'PRINT_RECEIPT',
+    receipt: receipt,
     transaction: {
       id: transaction.id,
       amount: transaction.amount,
-      status: 'APPROVED',
+      status: transaction.status,
       authCode: transaction.authorizationCode,
       rrn: transaction.rrn,
       stan: transaction.stan,
       time: transaction.transactionTime,
-      merchantId: transaction.merchantId,
-      bankName: transaction.bankName || 'QRIS',
-      paymentMethod: 'ShopeePay',
-      note: 'Payment successful via QRIS'
+      merchantName: transaction.merchantName,
+      bankName: transaction.bankName,
+      customerName: transaction.customerName
     },
     timestamp: new Date().toISOString(),
-    urgent: true // Flag untuk prioritas tinggi
+    printImmediately: true
   };
-  
+
   let sentCount = 0;
   merchantDevices.forEach((deviceSocket, deviceId) => {
     if (deviceSocket.readyState === 1) {
-      try {
-        deviceSocket.send(JSON.stringify(deviceMessage));
-        sentCount++;
-        console.log(`🖨️  PRINT command sent to device ${deviceId}`);
-      } catch (error) {
-        console.error(`Error sending to device ${deviceId}:`, error);
-      }
+      safeSend(deviceSocket, deviceMessage);
+      sentCount++;
+      console.log(`🖨️  Receipt sent to ${deviceId}`);
     }
   });
-  
+
   return sentCount > 0;
 }
-async function sendToMerchantCallback(transaction) {
-  const callbackUrl = config.merchantCallbackUrls.get(transaction.merchantId);
-  if (!callbackUrl) {
-    console.log(`🌐 No callback URL configured for merchant ${transaction.merchantId}`);
-    return false;
-  }
-  
-  try {
-    const callbackPayload = {
-      event: 'payment.authorization',
-      transaction: transaction,
-      signature: generateSignature(transaction, config.switchSecretKey),
-      timestamp: new Date().toISOString()
-    };
-    
-    console.log(`🌐 Sending callback to ${callbackUrl} for ${transaction.id}`);
-    
-    // In production, use axios/fetch
-    await new Promise(resolve => setTimeout(resolve, 200));
-    console.log(`🌐 Callback sent successfully to ${callbackUrl}`);
-    
-    return true;
-  } catch (error) {
-    console.error(`❌ Callback error for ${transaction.merchantId}:`, error);
-    return false;
-  }
-}
 
-// ========== SWITCH CALLBACK ENDPOINT ==========
-
-app.post("/api/switch/callback", (req, res) => {
-  console.log("🔄 SWITCH CALLBACK received:", JSON.stringify(req.body, null, 2));
+// ========== BANK CALLBACK ENDPOINT ==========
+app.post("/api/bank/callback", (req, res) => {
+  console.log("🏦 BANK CALLBACK from:", req.headers['x-bank-code'] || 'Unknown');
   
-  const switchSignature = req.headers['x-switch-signature'];
-  const switchTimestamp = req.headers['x-switch-timestamp'];
+  const bankCode = req.headers['x-bank-code'] || 'BCA';
+  const bankData = req.body;
   
-  // Verify switch signature
-  if (!verifySignature(req.body, switchSignature, config.switchSecretKey)) {
-    console.error('❌ Invalid switch signature');
-    return res.status(401).json({ 
-      success: false, 
-      error: "Invalid signature",
-      code: "SECURITY_ERROR"
-    });
+  // Parse QRIS dari payload jika ada
+  let qrisData = { merchantId: bankData.merchantId };
+  if (bankData.qrisString) {
+    qrisData = parseQRISString(bankData.qrisString);
   }
   
-  const switchData = req.body;
-  
-  // Map switch response codes
-  const statusInfo = mapResponseCodeToStatus(switchData.responseCode);
+  const statusInfo = mapResponseCodeToStatus(bankData.responseCode || '00');
   
   const transaction = {
-    id: switchData.transactionId,
-    merchantId: switchData.merchantId,
-    amount: parseFloat(switchData.amount),
+    id: bankData.transactionId || `BANK-${Date.now()}`,
+    merchantId: qrisData.merchantId || bankData.merchantId || 'MER001',
+    merchantName: qrisData.merchantName || bankData.merchantName || 'QRIS Merchant',
+    amount: parseFloat(bankData.amount || bankData.transactionAmount || 0),
     status: statusInfo.status,
-    responseCode: switchData.responseCode,
+    responseCode: bankData.responseCode || '00',
     responseMessage: statusInfo.message,
-    authorizationCode: switchData.authorizationCode,
-    rrn: switchData.rrn,
-    stan: switchData.stan,
-    terminalId: switchData.terminalId,
-    bankCode: switchData.bankCode,
-    bankName: switchData.bankName || 'Bank',
-    customerName: switchData.customerName,
-    customerAccount: switchData.customerAccount,
-    transactionTime: switchData.transactionTime || new Date().toISOString(),
-    settlementDate: switchData.settlementDate,
-    additionalData: switchData.additionalData,
-    source: 'SWITCH_CALLBACK',
+    authorizationCode: bankData.authorizationCode || `AUTH${Date.now().toString().slice(-8)}`,
+    rrn: bankData.rrn || `RRN${Date.now().toString().slice(-12)}`,
+    stan: bankData.stan || Math.floor(100000 + Math.random() * 900000).toString(),
+    bankCode: bankCode,
+    bankName: config.banks[bankCode]?.name || bankCode,
+    customerName: bankData.customerName || 'QRIS Customer',
+    customerAccount: bankData.customerAccount || 'QRIS-ACCOUNT',
+    transactionTime: bankData.transactionTime || new Date().toISOString(),
+    source: 'BANK_CALLBACK',
     receivedAt: new Date().toISOString(),
-    switchId: switchData.switchId,
-    switchTimestamp: switchTimestamp
+    city: qrisData.city || bankData.city || 'Unknown',
+    qrisParsed: qrisData
   };
   
-  console.log(`✅ Switch callback processed: ${transaction.id} - ${transaction.status}`);
+  console.log(`✅ Bank callback processed: ${transaction.id}`);
+  console.log(`   Merchant: ${transaction.merchantName}`);
+  console.log(`   Amount: Rp ${transaction.amount.toLocaleString()}`);
+  console.log(`   Status: ${transaction.status}`);
   
-  // Store transaction based on status
+  // Simpan transaksi
   if (transaction.status === 'APPROVED') {
     simulationState.approvedTransactions.set(transaction.id, transaction);
     
-    // Schedule settlement
-    setTimeout(() => {
-      completeSettlement(transaction.id);
-    }, 2000);
+    // Kirim notifikasi ke merchant
+    notifyMerchant(transaction);
+    
+    // Auto settlement setelah 2 detik
+    setTimeout(() => completeSettlement(transaction.id), 2000);
     
   } else {
     simulationState.declinedTransactions.set(transaction.id, transaction);
+    console.log(`❌ Payment declined: ${transaction.responseMessage}`);
   }
   
-  // Distribute to all channels (async)
-  distributeAuthorizationResult(transaction).then(distributionResults => {
-    console.log(`📨 Distribution results for ${transaction.id}:`, distributionResults);
-  });
-  
-  // Immediate response to switch
   res.json({
     success: true,
-    message: "Callback processed successfully",
+    message: "Bank callback processed",
     transactionId: transaction.id,
-    processedAt: new Date().toISOString(),
-    deliveryInitiated: true
+    status: transaction.status,
+    merchantNotified: transaction.status === 'APPROVED',
+    processedAt: new Date().toISOString()
   });
 });
 
+// ========== BCA CALLBACK SIMULATION ==========
+app.post("/api/test/bca-callback", (req, res) => {
+  const { qrisString, amount, merchantName } = req.body;
+  
+  // Contoh QRIS dari Shopee
+  const sampleQRIS = '00020101021226610016ID.CO.SHOPEE.WWW01189360091800215732120208215732120303UBE51440014ID.CO.QRIS.WWW0215ID20254448023210303UBE52045965530336054102450544.005802ID5916Shopee Indonesia6015KOTA JAKARTA SE610512950622205181170027479979648756304111C';
+  
+  // Parse QRIS string
+  const qrisData = parseQRISString(qrisString || sampleQRIS);
+  
+  // Simulasi callback dari BCA
+  const bcaCallback = {
+    transactionId: `BCA-${Date.now()}`,
+    merchantId: qrisData.merchantId,
+    merchantName: merchantName || qrisData.merchantName || 'Toko QRIS',
+    amount: amount || qrisData.amount || 2450544,
+    responseCode: '00',
+    authorizationCode: `BCA${Date.now().toString().slice(-10)}`,
+    rrn: `RRN${Date.now().toString().slice(-12)}`,
+    stan: Math.floor(100000 + Math.random() * 900000).toString(),
+    bankName: 'Bank Central Asia (BCA)',
+    customerName: 'Budi Santoso',
+    customerAccount: '888801234567890',
+    transactionTime: new Date().toISOString(),
+    city: qrisData.city || 'JAKARTA',
+    qrisString: qrisString || sampleQRIS
+  };
+  
+  console.log('🏦 Simulating BCA callback...');
+  console.log('   Amount:', `Rp ${bcaCallback.amount.toLocaleString()}`);
+  console.log('   Merchant:', bcaCallback.merchantName);
+  
+  // Kirim callback ke endpoint bank (simulasi internal)
+  setTimeout(() => {
+    const transaction = {
+      id: bcaCallback.transactionId,
+      merchantId: bcaCallback.merchantId,
+      merchantName: bcaCallback.merchantName,
+      amount: bcaCallback.amount,
+      status: 'APPROVED',
+      responseCode: '00',
+      responseMessage: 'APPROVED',
+      authorizationCode: bcaCallback.authorizationCode,
+      rrn: bcaCallback.rrn,
+      stan: bcaCallback.stan,
+      bankCode: 'BCA',
+      bankName: bcaCallback.bankName,
+      customerName: bcaCallback.customerName,
+      customerAccount: bcaCallback.customerAccount,
+      transactionTime: bcaCallback.transactionTime,
+      source: 'BCA_SIMULATION',
+      receivedAt: new Date().toISOString(),
+      city: bcaCallback.city
+    };
+    
+    simulationState.approvedTransactions.set(transaction.id, transaction);
+    notifyMerchant(transaction);
+    setTimeout(() => completeSettlement(transaction.id), 2000);
+    
+    console.log('✅ BCA simulation completed');
+  }, 500);
+  
+  res.json({
+    success: true,
+    message: "BCA callback simulation started",
+    transactionId: bcaCallback.transactionId,
+    merchant: bcaCallback.merchantName,
+    amount: `Rp ${bcaCallback.amount.toLocaleString()}`,
+    note: "Merchant will receive notification in 0.5 seconds"
+  });
+});
+
+// ========== SETTLEMENT FUNCTION ==========
 function completeSettlement(transactionId) {
   const transaction = simulationState.approvedTransactions.get(transactionId);
   if (!transaction) return;
@@ -639,566 +709,180 @@ function completeSettlement(transactionId) {
   console.log(`💰 Settlement completed: ${transactionId}`);
   
   // Notify merchant about settlement
-  const settlementNotification = {
+  const notification = {
     type: 'SETTLEMENT_COMPLETED',
     title: '💰 Funds Settled',
-    message: `Rp ${transaction.amount.toLocaleString()} has been settled to your account`,
+    message: `Rp ${transaction.amount.toLocaleString()} telah ditransfer ke rekening Anda`,
     transaction: transaction,
-    timestamp: new Date().toISOString(),
-    color: 'blue'
+    timestamp: new Date().toISOString()
   };
   
-  // Send to dashboard connections
-  simulationState.activeConnections.forEach((client) => {
+  simulationState.activeConnections.forEach(client => {
     if (client.connectionType === 'DASHBOARD' && 
         client.merchantId === transaction.merchantId && 
         client.readyState === 1) {
-      try {
-        client.send(JSON.stringify(settlementNotification));
-      } catch (error) {
-        console.error(`Error sending settlement to ${client.connectionId}:`, error);
-      }
+      safeSend(client, notification);
     }
   });
 }
 
-// ========== SHOPEE QRIS CALLBACK ENDPOINT ==========
-app.post("/api/shopee/callback", (req, res) => {
-  console.log("🛍️  SHOPEE CALLBACK received:", JSON.stringify(req.body, null, 2));
-  
-  // Shopee QRIS biasanya mengirim data dalam format khusus
-  const shopeeData = req.body;
-  
-  // Create transaction
-  const transaction = {
-    id: shopeeData.transactionId || `SHOPEE-${Date.now()}`,
-    merchantId: shopeeData.merchantId || 'SHOPEE001',
-    amount: parseFloat(shopeeData.amount || 0),
-    status: 'APPROVED', // Shopee hanya callback kalau sukses
-    responseCode: '00',
-    responseMessage: 'APPROVED',
-    authorizationCode: shopeeData.authorizationCode || `AUTH${Date.now().toString().slice(-8)}`,
-    rrn: shopeeData.rrn || `RRN${Date.now().toString().slice(-12)}`,
-    stan: shopeeData.stan || Math.floor(100000 + Math.random() * 900000).toString(),
-    bankCode: shopeeData.bankCode || 'QRIS',
-    bankName: 'QRIS via Shopee',
-    customerName: shopeeData.customerName || 'Shopee Customer',
-    customerAccount: shopeeData.customerAccount || 'SHOPEE-ACCOUNT',
-    transactionTime: shopeeData.transactionTime || new Date().toISOString(),
-    source: 'SHOPEE_QRIS',
-    receivedAt: new Date().toISOString(),
-    rawData: shopeeData
-  };
-  
-  console.log(`✅ Shopee callback processed: ${transaction.id}`);
-  
-  // Simpan transaksi
-  simulationState.approvedTransactions.set(transaction.id, transaction);
-  
-  // **LANGSUNG distribusi ke merchant (TANPA settlement delay)**
-  distributeAuthorizationResult(transaction).then(distributionResults => {
-    console.log(`📨 Shopee distribution results:`, distributionResults);
-  });
-  
-  // Response ke Shopee HARUS format JSON ini
-  res.json({
-    "errCode": "0",
-    "errMessage": "success",
-    "timestamp": new Date().toISOString(),
-    "transactionId": transaction.id,
-    "received": true
-  });
-});
-
-// ========== SIMULASI PEMBAYARAN SHOPEE ==========
-
-
-// Helper untuk parsing QRIS string
-function extractFromQRIS(qrisString, tag) {
-  // Implementasi sederhana parsing QRIS
-  // Format QRIS: tag(2) + length(2) + value
-  const regex = new RegExp(tag + '(\\d{2})(.{1,})', 'g');
-  const match = regex.exec(qrisString);
-  return match ? match[2] : null;
-}
-
-// ========== SIMULASI PEMBAYARAN SHOPEE ==========
-app.post("/api/shopee/simulate-payment", async (req, res) => {
-  console.log("🎮 Simulating Shopee QRIS payment...");
-  
-  const { merchantId = 'MER001', amount = 2450544, qrisString } = req.body;
-  
-  const transactionId = `SHOPEE-${Date.now()}`;
-  
-  // Mock data Shopee
-  const shopeeCallbackData = {
-    transactionId: transactionId,
-    merchantId: merchantId,
-    amount: amount,
-    status: "SUCCESS",
-    authorizationCode: `AUTH${Date.now().toString().slice(-8)}`,
-    rrn: `RRN${Date.now().toString().slice(-12)}`,
-    stan: Math.floor(100000 + Math.random() * 900000).toString(),
-    bankCode: "QRIS",
-    customerName: "Shopee User",
-    customerAccount: "SHOPEEPAY-12345",
-    transactionTime: new Date().toISOString(),
-    qrisString: qrisString || "00020101021226610016ID.CO.SHOPEE.WWW01189360091800215732120208215732120303UBE51440014ID.CO.QRIS.WWW0215ID20254448023210303UBE52045965530336054102450544.005802ID5916Shopee Indonesia6015KOTA JAKARTA SE610512950622205181170027479979648756304111C"
-  };
-  
-  console.log(`🛍️  Simulating Shopee payment: Rp ${amount.toLocaleString()}`);
-  
-  // Kirim ke callback endpoint kita sendiri
-  setTimeout(async () => {
-    try {
-      // Dynamic import untuk fetch
-      let fetch;
-      try {
-        fetch = (await import('node-fetch')).default;
-      } catch {
-        fetch = global.fetch;
-      }
-      
-      const response = await fetch(`https://qris-backend.onrender.com/api/shopee/callback`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(shopeeCallbackData)
-      });
-      
-      const result = await response.json();
-      console.log(`✅ Shopee simulation sent:`, result);
-      
-    } catch (error) {
-      console.error(`❌ Failed to send Shopee simulation:`, error);
-    }
-  }, 1000);
-  
+// ========== ANALYTICS ENDPOINTS ==========
+app.get("/api/analytics/stats", (req, res) => {
   res.json({
     success: true,
-    message: "Shopee payment simulation initiated",
-    transactionId,
-    amount: `Rp ${amount.toLocaleString()}`,
-    merchantId,
-    simulation: {
-      note: "Callback will be sent in 1 second",
-      shopeeData: shopeeCallbackData
+    timestamp: new Date().toISOString(),
+    ...merchantTracker.getSummary(),
+    connections: simulationState.activeConnections.size,
+    transactions: {
+      pending: simulationState.pendingTransactions.size,
+      approved: simulationState.approvedTransactions.size,
+      declined: simulationState.declinedTransactions.size,
+      settled: simulationState.settledTransactions.size
     }
   });
 });
 
-// ========== SIMULATION ENDPOINTS ==========
-
-app.post("/api/simulate/switch-callback", async (req, res) => {
-  console.log("🎮 Simulating switch callback...");
+app.get("/api/analytics/merchant/:merchantId", (req, res) => {
+  const { merchantId } = req.params;
   
-  const { merchantId, amount, bankCode = 'BCA' } = req.body;
-  
-  if (!merchantId || !amount) {
-    return res.status(400).json({ error: "Missing merchantId or amount" });
-  }
-  
-  const transactionId = `SWITCH-${Date.now()}`;
-  const isApproved = Math.random() > 0.1; // 90% success rate
-  
-  const switchResponse = {
-    transactionId,
-    merchantId,
-    amount: parseFloat(amount),
-    responseCode: isApproved ? '00' : '51',
-    authorizationCode: isApproved ? `AUTH${Date.now().toString().slice(-8)}` : null,
-    rrn: `RRN${Date.now().toString().slice(-12)}`,
-    stan: Math.floor(100000 + Math.random() * 900000).toString(),
-    terminalId: 'TERM001',
-    bankCode,
-    bankName: bankCode === 'BCA' ? 'Bank Central Asia' : 'Bank',
-    customerName: 'Simulated Customer',
-    customerAccount: '1234XXXX5678',
-    transactionTime: new Date().toISOString(),
-    settlementDate: new Date().toISOString().split('T')[0],
-    switchId: 'SWITCH-SIM-001',
-    additionalData: {
-      simulation: true,
-      note: 'This is a simulated switch callback'
-    }
-  };
-  
-  // Generate signature
-  const signature = generateSignature(switchResponse, config.switchSecretKey);
-  const timestamp = new Date().toISOString();
-  
-  // Store as pending transaction
-  const pendingTransaction = {
-    id: transactionId,
-    merchantId: merchantId,
-    amount: parseFloat(amount),
-    bankCode: bankCode,
-    status: 'PENDING',
-    source: 'SIMULATION',
-    createdAt: new Date().toISOString()
-  };
-  
-  simulationState.pendingTransactions.set(transactionId, pendingTransaction);
-  
-  // Notify dashboard about pending transaction
-  sendToMerchantDashboard(pendingTransaction);
-  
-  // Send to our own callback endpoint after delay
-  setTimeout(async () => {
-    console.log(`🔄 Sending simulated callback for ${transactionId}`);
-    
-    try {
-      // Dynamic import for node-fetch
-      let fetch;
-      try {
-        fetch = (await import('node-fetch')).default;
-      } catch {
-        // Fallback if node-fetch not available
-        fetch = global.fetch || (() => {
-          throw new Error('Fetch not available');
-        });
-      }
-      
-      await fetch(`https://qris-backend.onrender.com/api/switch/callback`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-switch-signature': signature,
-          'x-switch-timestamp': timestamp
-        },
-        body: JSON.stringify(switchResponse)
-      });
-      
-      console.log(`✅ Simulated callback sent for ${transactionId}`);
-    } catch (error) {
-      console.error(`❌ Failed to send simulated callback:`, error);
-    }
-  }, 1000);
-  
-  res.json({
-    success: true,
-    message: "Switch callback simulation initiated",
-    transactionId,
-    simulation: {
-      switchResponse,
-      signature: signature.substring(0, 16) + '...',
-      timestamp,
-      estimatedDelivery: "1 second"
-    }
-  });
-});
-
-// ========== DEVICE MANAGEMENT ENDPOINTS ==========
-
-app.get("/api/device/status/:merchantId/:deviceId", (req, res) => {
-  const { merchantId, deviceId } = req.params;
-  
-  const merchantDevices = simulationState.merchantDevices.get(merchantId);
-  const isConnected = merchantDevices && merchantDevices.has(deviceId);
-  
-  // Check in active connections
-  let connectionData = null;
-  simulationState.activeConnections.forEach((ws) => {
-    if (ws.merchantId === merchantId && ws.deviceId === deviceId) {
-      connectionData = {
-        connectionId: ws.connectionId,
-        connectedAt: ws.connectedAt,
-        lastActivity: ws.lastActivity,
-        readyState: ws.readyState
-      };
-    }
-  });
+  const merchantStats = merchantTracker.data.merchants[merchantId] || { delivered: 0, failed: 0 };
+  const total = merchantStats.delivered + merchantStats.failed;
   
   res.json({
     merchantId,
-    deviceId,
-    connected: isConnected,
-    lastSeen: connectionData ? new Date(connectionData.lastActivity).toISOString() : null,
-    connectionId: connectionData ? connectionData.connectionId : null,
-    connectionAge: connectionData ? Date.now() - connectionData.connectedAt : null,
+    successRate: total > 0 ? (merchantStats.delivered / total * 100).toFixed(1) : 0,
+    totalNotifications: total,
+    delivered: merchantStats.delivered,
+    failed: merchantStats.failed,
+    connections: Array.from(simulationState.activeConnections.values())
+      .filter(c => c.merchantId === merchantId).length,
+    devices: simulationState.merchantDevices.get(merchantId)?.size || 0,
     timestamp: new Date().toISOString()
   });
 });
 
-app.post("/api/device/register", (req, res) => {
-  const { merchantId, deviceId, deviceName, deviceType = 'EDC' } = req.body;
-  
-  if (!merchantId || !deviceId) {
-    return res.status(400).json({ error: "Missing merchantId or deviceId" });
-  }
-  
-  console.log(`📝 Registering device: ${deviceId} for merchant ${merchantId}`);
-  
-  res.json({
-    success: true,
-    message: "Device registered successfully",
-    device: {
-      deviceId,
-      merchantId,
-      deviceName: deviceName || `Device ${deviceId}`,
-      deviceType,
-      registeredAt: new Date().toISOString(),
-      status: 'REGISTERED'
-    }
-  });
-});
-
-// ========== TRANSACTION ENDPOINTS ==========
-
+// ========== TRANSACTIONS ENDPOINT ==========
 app.get("/api/transactions/:merchantId", (req, res) => {
   const { merchantId } = req.params;
   
   const allTransactions = [
-    ...Array.from(simulationState.pendingTransactions.values()),
     ...Array.from(simulationState.approvedTransactions.values()),
     ...Array.from(simulationState.declinedTransactions.values()),
     ...Array.from(simulationState.settledTransactions.values())
   ];
   
-  const merchantTransactions = allTransactions.filter(tx => tx.merchantId === merchantId);
+  const merchantTransactions = allTransactions
+    .filter(tx => tx.merchantId === merchantId)
+    .sort((a, b) => new Date(b.transactionTime) - new Date(a.transactionTime));
   
   res.json({
     merchantId,
     count: merchantTransactions.length,
-    transactions: merchantTransactions.sort((a, b) => 
-      new Date(b.timestamp || b.createdAt || b.receivedAt) - new Date(a.timestamp || a.createdAt || a.receivedAt)
-    ),
+    transactions: merchantTransactions,
     summary: {
-      pending: merchantTransactions.filter(tx => tx.status === 'PENDING').length,
       approved: merchantTransactions.filter(tx => tx.status === 'APPROVED').length,
       declined: merchantTransactions.filter(tx => tx.status === 'DECLINED').length,
-      settled: merchantTransactions.filter(tx => tx.settlementStatus === 'COMPLETED').length
+      settled: merchantTransactions.filter(tx => tx.settlementStatus === 'COMPLETED').length,
+      totalAmount: merchantTransactions
+        .filter(tx => tx.status === 'APPROVED')
+        .reduce((sum, tx) => sum + tx.amount, 0)
     },
     timestamp: new Date().toISOString()
   });
 });
 
-// ========== WEB SOCKET STATUS ENDPOINTS ==========
-
-app.get("/api/websocket/connections", (req, res) => {
-  const connections = [];
-  
-  simulationState.activeConnections.forEach((ws) => {
-    connections.push({
-      connectionId: ws.connectionId,
-      merchantId: ws.merchantId,
-      deviceId: ws.deviceId,
-      connectionType: ws.connectionType,
-      connectedAt: new Date(ws.connectedAt).toISOString(),
-      lastActivity: new Date(ws.lastActivity).toISOString(),
-      connectionAge: Date.now() - ws.connectedAt,
-      readyState: ws.readyState
-    });
-  });
-  
-  res.json({
-    totalConnections: simulationState.activeConnections.size,
-    connections: connections,
-    byType: {
-      dashboard: connections.filter(c => c.connectionType === 'DASHBOARD').length,
-      device: connections.filter(c => c.connectionType === 'DEVICE').length
-    },
-    timestamp: new Date().toISOString()
-  });
-});
-
-app.get("/api/websocket/test/:merchantId", (req, res) => {
-  const { merchantId } = req.params;
-  
-  let sentCount = 0;
-  
-  simulationState.activeConnections.forEach((ws) => {
-    if (ws.connectionType === 'DASHBOARD' && 
-        ws.merchantId === merchantId && 
-        ws.readyState === 1) {
-      try {
-        ws.send(JSON.stringify({
-          type: 'TEST_MESSAGE',
-          message: 'This is a test message from the server',
-          timestamp: new Date().toISOString()
-        }));
-        sentCount++;
-      } catch (error) {
-        console.error('Error sending test message:', error);
-      }
-    }
-  });
-  
-  res.json({
-    success: true,
-    message: `Test message sent to ${sentCount} dashboard connections`,
-    connections: sentCount,
-    timestamp: new Date().toISOString()
-  });
-});
-
-// ========== EXISTING ENDPOINTS (Maintained) ==========
-
+// ========== ROOT ENDPOINT ==========
 app.get("/", (req, res) => {
-  const dashboardCount = Array.from(simulationState.activeConnections.values())
-    .filter(ws => ws.connectionType === 'DASHBOARD').length;
-  
-  const deviceCount = Array.from(simulationState.activeConnections.values())
-    .filter(ws => ws.connectionType === 'DEVICE').length;
-  
   res.json({
-    service: "QRIS Payment Gateway",
-    version: "4.0.0",
+    service: "QRIS Payment Gateway v6.0",
+    version: "6.0.0",
     status: "running",
+    focus: "Merchant Notification System",
     features: [
-      "Fixed WebSocket Connection Tracking",
-      "Device Integration",
-      "Switch Callback",
-      "Multi-channel Notification",
-      "Render.com Compatible"
+      "QRIS String Parser",
+      "Bank Callback Handler (BCA, BRI, Mandiri, BNI)",
+      "Real-time Merchant Dashboard Notifications",
+      "Printer/EDC Receipt Printing",
+      "Success Rate Tracking (SheerID Style)",
+      "Exponential Backoff Retry",
+      "WebSocket Heartbeat System"
     ],
-    connections: {
-      total: simulationState.activeConnections.size,
-      dashboard: dashboardCount,
-      devices: deviceCount
-    },
-    simulation: {
-      banks: simulationState.mockBanks.length,
-      customers: simulationState.mockCustomers.length,
-      transactions: {
-        pending: simulationState.pendingTransactions.size,
-        approved: simulationState.approvedTransactions.size,
-        declined: simulationState.declinedTransactions.size,
-        settled: simulationState.settledTransactions.size
-      }
-    },
-       endpoints: {
-      switch_callback: "POST /api/switch/callback",
-      simulate_callback: "POST /api/simulate/switch-callback",
-      shopee_callback: "POST /api/shopee/callback",
-      shopee_simulate: "POST /api/shopee/simulate-payment",
-      websocket: "/ws?merchantId=YOUR_ID (add &deviceId=DEVICE_ID for devices)",
-      device_status: "GET /api/device/status/:merchantId/:deviceId",
+    connections: simulationState.activeConnections.size,
+    stats: merchantTracker.getSummary(),
+    endpoints: {
+      bank_callback: "POST /api/bank/callback (Header: x-bank-code)",
+      bca_simulation: "POST /api/test/bca-callback",
+      analytics_stats: "GET /api/analytics/stats",
+      merchant_stats: "GET /api/analytics/merchant/:merchantId",
       transactions: "GET /api/transactions/:merchantId",
-      websocket_status: "GET /api/websocket/connections",
-      websocket_test: "GET /api/websocket/test/:merchantId"
+      websocket: "GET /ws?merchantId=YOUR_ID&deviceId=DEVICE_ID (optional)"
     },
     documentation: {
-      dashboard: "wss://qris-backend.onrender.com/ws?merchantId=YOUR_ID",
-      device: "wss://qris-backend.onrender.com/ws?merchantId=YOUR_ID&deviceId=DEVICE_ID",
-      note: "Send PING messages every 10 seconds to keep connection alive"
-    },
-    serverInfo: {
-      keepAliveInterval: config.websocketKeepAlive,
-      maxConnectionAge: config.maxConnectionAge,
-      uptime: process.uptime()
+      dashboard_ws: `wss://${req.headers.host}/ws?merchantId=YOUR_ID`,
+      device_ws: `wss://${req.headers.host}/ws?merchantId=YOUR_ID&deviceId=PRINTER01`,
+      bank_callback_format: {
+        headers: { "x-bank-code": "BCA" },
+        body: { 
+          "transactionId": "TXN123456789", 
+          "amount": 100000, 
+          "responseCode": "00",
+          "merchantId": "MER001",
+          "merchantName": "Merchant Name",
+          "authorizationCode": "AUTH123456",
+          "rrn": "RRN987654321",
+          "stan": "123456",
+          "customerName": "John Doe",
+          "customerAccount": "1234567890",
+          "transactionTime": "2024-01-07T10:30:00Z",
+          "city": "JAKARTA",
+          "qrisString": "00020101021226610016ID.CO.SHOPEE.WWW01189360091800215732120208215732120303UBE51440014ID.CO.QRIS.WWW0215ID20254448023210303UBE52045965530336054102450544.005802ID5916Shopee Indonesia6015KOTA JAKARTA SE610512950622205181170027479979648756304111C"
+        }
+      }
     },
     timestamp: new Date().toISOString()
-  });
-});
-
-app.get("/health", (req, res) => {
-  // Hitung connections dari simulationState.activeConnections
-  const dashboardCount = Array.from(simulationState.activeConnections.values())
-    .filter(ws => ws.connectionType === 'DASHBOARD').length;
-  
-  const deviceCount = Array.from(simulationState.activeConnections.values())
-    .filter(ws => ws.connectionType === 'DEVICE').length;
-  
-  res.json({
-    status: "healthy",
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    connections: {
-      total: simulationState.activeConnections.size, // <-- INI YANG BENAR
-      dashboard: dashboardCount,
-      devices: deviceCount
-    },
-    simulation: {
-      pendingTransactions: simulationState.pendingTransactions.size,
-      approvedTransactions: simulationState.approvedTransactions.size,
-      declinedTransactions: simulationState.declinedTransactions.size,
-      settledTransactions: simulationState.settledTransactions.size
-    },
-    websocket: {
-      keepAliveInterval: config.websocketKeepAlive,
-      maxConnectionAge: config.maxConnectionAge,
-      heartbeatRunning: true
-    }
-  });
-});
-
-app.post("/api/payment", (req, res) => {
-  const { merchantId, amount, description } = req.body;
-  
-  if (!merchantId || !amount) {
-    return res.status(400).json({ error: "Missing merchantId or amount" });
-  }
-  
-  const transactionId = `DIRECT-${Date.now()}`;
-  
-  const transaction = {
-    id: transactionId,
-    merchantId,
-    amount: parseFloat(amount),
-    description: description || "Direct Payment",
-    status: "SUCCESS",
-    timestamp: new Date().toISOString(),
-    type: "DIRECT"
-  };
-  
-  console.log(`💳 Direct payment: ${transactionId}`);
-  
-  sendToMerchantDashboard(transaction);
-  
-  res.json({
-    success: true,
-    transaction,
-    message: "Direct payment processed"
   });
 });
 
 // ========== START SERVER ==========
 server.listen(PORT, '0.0.0.0', () => {
   console.log('='.repeat(70));
-  console.log('🚀 QRIS PAYMENT GATEWAY v4.0 - FIXED WEBSOCKET');
+  console.log('🚀 QRIS PAYMENT GATEWAY v6.0 - MERCHANT NOTIFICATION FOCUS');
   console.log('='.repeat(70));
   console.log(`📡 Port: ${PORT}`);
-  console.log(`🌐 HTTP: https://qris-backend.onrender.com`);
-  console.log(`📊 Dashboard WS: wss://qris-backend.onrender.com/ws?merchantId=YOUR_ID`);
-  console.log(`🖨️  Device WS: wss://qris-backend.onrender.com/ws?merchantId=YOUR_ID&deviceId=DEVICE_ID`);
-  console.log(`🔐 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`⚡ Keep Alive: ${config.websocketKeepAlive}ms`);
-  console.log(`⏳ Max Connection Age: ${config.maxConnectionAge}ms`);
+  console.log(`🌐 HTTP Server: http://0.0.0.0:${PORT}`);
+  console.log(`📊 Dashboard WS: ws://0.0.0.0:${PORT}/ws?merchantId=YOUR_ID`);
+  console.log(`🖨️  Device WS: ws://0.0.0.0:${PORT}/ws?merchantId=YOUR_ID&deviceId=PRINTER01`);
+  console.log(`📈 Notification Tracking: Enabled (SheerID Style)`);
   console.log('='.repeat(70));
-  console.log('🛡️  CRITICAL FIXES APPLIED:');
-  console.log('  • Single connection tracking (simulationState.activeConnections)');
-  console.log('  • App-level ping (not WebSocket protocol ping)');
-  console.log('  • No ws.terminate() for dashboard clients');
-  console.log('  • Proper connection cleanup');
+  console.log('🎯 CORE FEATURES:');
+  console.log('  • QRIS String Parser');
+  console.log('  • Bank Callback Handler (BCA, BRI, Mandiri, BNI)');
+  console.log('  • Real-time Dashboard Notifications');
+  console.log('  • Automatic Receipt Printing');
+  console.log('  • Success Rate Analytics');
+  console.log('  • Exponential Backoff Retry');
   console.log('='.repeat(70));
   console.log('📡 Test Commands:');
-  console.log(`  curl -X POST https://qris-backend.onrender.com/api/simulate/switch-callback`);
-  console.log(`  wscat -c "wss://qris-backend.onrender.com/ws?merchantId=MER001"`);
+  console.log(`  curl -X POST http://localhost:${PORT}/api/test/bca-callback`);
+  console.log(`  curl -X GET http://localhost:${PORT}/api/analytics/stats`);
+  console.log(`  wscat -c "ws://localhost:${PORT}/ws?merchantId=MER001"`);
   console.log('='.repeat(70));
 });
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
-  console.log('🛑 Shutting down gracefully...');
+  console.log('🛑 Graceful shutdown initiated...');
   
-  clearInterval(heartbeatInterval);
-  
-  simulationState.activeConnections.forEach((ws) => {
-    if (ws.readyState === 1) {
-      try {
-        ws.send(JSON.stringify({
-          type: 'SERVER_SHUTDOWN',
-          message: 'Server maintenance',
-          timestamp: new Date().toISOString()
-        }));
-        ws.close();
-      } catch (error) {
-        console.error('Error closing client:', error);
-      }
-    }
+  simulationState.activeConnections.forEach(ws => {
+    safeSend(ws, {
+      type: 'SERVER_SHUTDOWN',
+      message: 'Server maintenance',
+      timestamp: new Date().toISOString()
+    });
+    ws.close();
   });
+  
+  merchantTracker.saveData();
   
   wss.close(() => {
     console.log('✅ WebSocket server closed');
@@ -1208,12 +892,4 @@ process.on('SIGTERM', () => {
     console.log('✅ HTTP server stopped');
     process.exit(0);
   });
-});
-
-// Clean up intervals on exit
-process.on('exit', () => {
-  if (heartbeatInterval) {
-    clearInterval(heartbeatInterval);
-  }
-  console.log('🧹 Cleaned up intervals');
 });
