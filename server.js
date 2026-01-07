@@ -1068,9 +1068,11 @@ app.get("/", (req, res) => {
         settled: simulationState.settledTransactions.size
       }
     },
-    endpoints: {
+       endpoints: {
       switch_callback: "POST /api/switch/callback",
       simulate_callback: "POST /api/simulate/switch-callback",
+      shopee_callback: "POST /api/shopee/callback",
+      shopee_simulate: "POST /api/shopee/simulate-payment",
       websocket: "/ws?merchantId=YOUR_ID (add &deviceId=DEVICE_ID for devices)",
       device_status: "GET /api/device/status/:merchantId/:deviceId",
       transactions: "GET /api/transactions/:merchantId",
