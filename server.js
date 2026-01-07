@@ -711,70 +711,7 @@ app.post("/api/shopee/callback", (req, res) => {
 });
 
 // ========== SIMULASI PEMBAYARAN SHOPEE ==========
-app.post("/api/shopee/simulate-payment", async (req, res) => {
-  console.log("🎮 Simulating Shopee QRIS payment...");
-  
-  const { merchantId = 'MER001', amount = 2450544, qrisString } = req.body;
-  
-  const transactionId = `SHOPEE-${Date.now()}`;
-  
-  // Mock data Shopee
-  const shopeeCallbackData = {
-    transactionId: transactionId,
-    merchantId: merchantId,
-    amount: amount,
-    status: "SUCCESS",
-    authorizationCode: `AUTH${Date.now().toString().slice(-8)}`,
-    rrn: `RRN${Date.now().toString().slice(-12)}`,
-    stan: Math.floor(100000 + Math.random() * 900000).toString(),
-    bankCode: "QRIS",
-    customerName: "Shopee User",
-    customerAccount: "SHOPEEPAY-12345",
-    transactionTime: new Date().toISOString(),
-    qrisString: qrisString || "00020101021226610016ID.CO.SHOPEE.WWW01189360091800215732120208215732120303UBE51440014ID.CO.QRIS.WWW0215ID20254448023210303UBE52045965530336054102450544.005802ID5916Shopee Indonesia6015KOTA JAKARTA SE610512950622205181170027479979648756304111C"
-  };
-  
-  console.log(`🛍️  Simulating Shopee payment: Rp ${amount.toLocaleString()}`);
-  
-  // Kirim ke callback endpoint kita sendiri
-  setTimeout(async () => {
-    try {
-      // Dynamic import untuk fetch
-      let fetch;
-      try {
-        fetch = (await import('node-fetch')).default;
-      } catch {
-        fetch = global.fetch;
-      }
-      
-      const response = await fetch(`https://qris-backend.onrender.com/api/shopee/callback`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(shopeeCallbackData)
-      });
-      
-      const result = await response.json();
-      console.log(`✅ Shopee simulation sent:`, result);
-      
-    } catch (error) {
-      console.error(`❌ Failed to send Shopee simulation:`, error);
-    }
-  }, 1000);
-  
-  res.json({
-    success: true,
-    message: "Shopee payment simulation initiated",
-    transactionId,
-    amount: `Rp ${amount.toLocaleString()}`,
-    merchantId,
-    simulation: {
-      note: "Callback will be sent in 1 second",
-      shopeeData: shopeeCallbackData
-    }
-  });
-});
+
 
 // Helper untuk parsing QRIS string
 function extractFromQRIS(qrisString, tag) {
