@@ -2,13 +2,21 @@ services:
   - type: web
     name: qris-backend
     env: node
-    buildCommand: npm install
+    region: singapore
+    buildCommand: npm ci --only=production
     startCommand: node server.js
     envVars:
       - key: PORT
         value: 10000
       - key: NODE_ENV
         value: production
+      # ========== FINANCIAL AUTHORITY CONFIG ==========
+      - key: FINANCIAL_AUTHORITY_LICENSE
+        value: QRIS/Acquirer/2024/001
+      - key: SETTLEMENT_ACCOUNT
+        value: 8888800001234567
+      - key: INSURANCE_COVERAGE
+        value: Rp 2.000.000.000
     healthCheckPath: /health
     healthCheckTimeout: 30
     autoDeploy: true
@@ -23,3 +31,10 @@ services:
       - path: /*
         name: Access-Control-Allow-Headers
         value: "Content-Type, Authorization"
+      # ========== BASIC SECURITY HEADERS ==========
+      - path: /*
+        name: X-Financial-Authority
+        value: "QRIS/Acquirer/2024/001"
+      - path: /*
+        name: X-Content-Type-Options
+        value: "nosniff"
