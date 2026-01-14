@@ -1,4 +1,4 @@
-﻿// C:\Users\Dylan\Desktop\qris_app\backend\server.js
+﻿// C:\Users\Dylan\Desktop\qris_app\backend\server.js - REFINED VERSION
 const express = require('express');
 const cors = require('cors');
 const WebSocket = require('ws');
@@ -13,17 +13,24 @@ const wss = new WebSocket.Server({ server });
 app.use(cors());
 app.use(express.json());
 
-// ========== ML ATTACK DETECTION ENGINE ==========
+// Session management for API key-less system
+const activeSessions = new Map();
+const sessionHistory = new Map();
+const deviceProfiles = new Map();
+
+// ========== ENHANCED ML ATTACK DETECTION ENGINE ==========
 class MLAttackDetection {
   constructor() {
-    console.log('🤖 ML Attack Detection Engine Initialized');
+    console.log('🤖 Enhanced ML Attack Detection Engine Initialized');
     this.attackPatterns = new Map();
-    this.transactionHistory = new Map(); // merchantId -> [transactions]
-    this.loadAttackPatterns();
+    this.transactionHistory = new Map();
+    this.sessionHistory = new Map();
+    this.lastTimestamps = new Map();
+    this.loadEnhancedAttackPatterns();
   }
 
-  loadAttackPatterns() {
-    // QRIS manipulation patterns
+  loadEnhancedAttackPatterns() {
+    // ========== ORIGINAL QRIS PATTERNS ==========
     this.attackPatterns.set('QRIS_LENGTH_ANOMALY', {
       detect: (qrData) => qrData.length < 100 || qrData.length > 512,
       risk: 0.3,
@@ -71,23 +78,62 @@ class MLAttackDetection {
       risk: 0.3,
       description: 'Suspicious round amount patterns'
     });
+
+    // ========== NEW SESSION-BASED PATTERNS ==========
+    this.attackPatterns.set('SESSION_REPLAY_ATTACK', {
+      detect: (transaction) => this.detectSessionReplay(transaction),
+      risk: 0.7,
+      description: 'Session token reuse detected'
+    });
+
+    this.attackPatterns.set('DEVICE_FINGERPRINT_SPOOFING', {
+      detect: (transaction) => this.detectDeviceSpoofing(transaction),
+      risk: 0.8,
+      description: 'Device fingerprint mismatch'
+    });
+
+    this.attackPatterns.set('TIMESTAMP_MANIPULATION', {
+      detect: (transaction) => this.detectTimestampManipulation(transaction),
+      risk: 0.6,
+      description: 'Suspicious timestamp anomalies'
+    });
+
+    this.attackPatterns.set('SIGNATURE_PREDICTION_ATTACK', {
+      detect: (transaction) => this.detectSignaturePrediction(transaction),
+      risk: 0.9,
+      description: 'Possible signature prediction attempt'
+    });
+
+    this.attackPatterns.set('QRIS_DYNAMIC_MANIPULATION', {
+      detect: (transaction) => this.detectQRISDynamicManipulation(transaction),
+      risk: 0.5,
+      description: 'QRIS manipulated between scan and payment'
+    });
+
+    this.attackPatterns.set('SESSION_TOKEN_PREDICTION', {
+      detect: (transaction) => this.detectSessionTokenPrediction(transaction),
+      risk: 0.8,
+      description: 'Session token prediction attempt'
+    });
+
+    this.attackPatterns.set('HEADER_INJECTION_ATTACK', {
+      detect: (transaction) => this.detectHeaderInjection(transaction),
+      risk: 0.6,
+      description: 'Malicious header injection detected'
+    });
   }
 
-  // ========== DETECTION METHODS ==========
-
+  // ========== ORIGINAL DETECTION METHODS ==========
   detectAmountTampering(transaction) {
     if (!transaction.qrString || !transaction.amount) return false;
     
-    // Extract amount from QRIS (tag 54)
     const amountPattern = /54(\d{2})(\d+)/;
     const match = transaction.qrString.match(amountPattern);
     
     if (!match) return false;
     
-    const qrisAmount = parseInt(match[2], 10) / 100; // Convert to IDR
+    const qrisAmount = parseInt(match[2], 10) / 100;
     const reportedAmount = transaction.amount;
-    
-    // Check if amounts match (within 1% tolerance)
     const tolerance = 0.01;
     const diff = Math.abs(qrisAmount - reportedAmount) / reportedAmount;
     
@@ -110,17 +156,13 @@ class MLAttackDetection {
   detectSignatureAnomaly(signature) {
     if (!signature) return false;
     
-    // Check length
     if (signature.length < 10 || signature.length > 512) return true;
     
-    // Check if it's hex or base64url
     const isHex = /^[0-9a-fA-F]+$/.test(signature);
     const isBase64Url = /^[A-Za-z0-9_-]+$/.test(signature);
     
-    // If neither hex nor base64url, suspicious
     if (!isHex && !isBase64Url) return true;
     
-    // Check entropy (too low entropy = suspicious)
     const entropy = this.calculateEntropy(signature);
     return entropy < 2.0;
   }
@@ -136,22 +178,18 @@ class MLAttackDetection {
     const history = this.transactionHistory.get(merchantId);
     const now = Date.now();
     
-    // Filter transactions from last 5 minutes
     const recentTransactions = history.filter(t => 
       now - t.timestamp < 5 * 60 * 1000
     );
     
-    // Check customer frequency
     const customerTransactions = recentTransactions.filter(t => 
       t.customerId === customerId
     );
     
-    // More than 3 transactions in 5 minutes from same customer
     if (customerTransactions.length >= 3) {
       return true;
     }
     
-    // Add current transaction to history
     history.push({
       timestamp: now,
       customerId,
@@ -159,7 +197,6 @@ class MLAttackDetection {
       qrHash: this.hashQR(transaction.qrString)
     });
     
-    // Keep only last 100 transactions per merchant
     if (history.length > 100) {
       history.splice(0, history.length - 100);
     }
@@ -170,23 +207,147 @@ class MLAttackDetection {
   detectAmountRounding(transaction) {
     const amount = transaction.amount;
     
-    // Check for suspicious round amounts
     const suspiciousAmounts = [
-      1000000, 2000000, 5000000, 10000000, // Exact millions
-      1234567, 9999999, 8888888, // Pattern amounts
+      1000000, 2000000, 5000000, 10000000,
+      1234567, 9999999, 8888888,
     ];
     
-    // Check if amount is exact multiple of 100k (common in attacks)
     if (amount % 100000 === 0 && amount > 1000000) {
       return true;
     }
     
-    // Check for exact match with suspicious amounts
     return suspiciousAmounts.includes(amount);
   }
 
-  // ========== CORE DETECTION ==========
+  // ========== NEW SESSION-BASED DETECTION METHODS ==========
+  detectSessionReplay(transaction) {
+    const sessionToken = transaction.headers?.['x-session-token'];
+    const timestamp = parseInt(transaction.headers?.['x-timestamp'] || '0');
+    
+    if (!sessionToken || !timestamp) return false;
+    
+    const sessionUseCount = this.getSessionUseCount(sessionToken, 10 * 1000);
+    return sessionUseCount > 1;
+  }
 
+  detectDeviceSpoofing(transaction) {
+    const deviceHash = transaction.headers?.['x-device-hash'];
+    const sessionToken = transaction.headers?.['x-session-token'];
+    
+    if (!deviceHash || !sessionToken) return false;
+    
+    const session = activeSessions.get(sessionToken);
+    if (!session) return false;
+    
+    return session.deviceHash !== deviceHash;
+  }
+
+  detectTimestampManipulation(transaction) {
+    const timestamp = parseInt(transaction.headers?.['x-timestamp'] || '0');
+    const serverTime = Date.now();
+    const diff = Math.abs(serverTime - timestamp);
+    
+    if (diff > 5 * 60 * 1000) {
+      return true;
+    }
+    
+    const sessionToken = transaction.headers?.['x-session-token'];
+    if (sessionToken && this.lastTimestamps.has(sessionToken)) {
+      const lastTimestamp = this.lastTimestamps.get(sessionToken);
+      if (timestamp <= lastTimestamp) {
+        return true;
+      }
+    }
+    
+    return false;
+  }
+
+  detectSignaturePrediction(transaction) {
+    const signature = transaction.headers?.['x-signature'];
+    const sessionToken = transaction.headers?.['x-session-token'];
+    const timestamp = transaction.headers?.['x-timestamp'];
+    const deviceHash = transaction.headers?.['x-device-hash'];
+    
+    if (!signature || !sessionToken || !timestamp || !deviceHash) {
+      return false;
+    }
+    
+    const expected = crypto
+      .createHash('sha256')
+      .update(`${sessionToken}|${timestamp}|${deviceHash}`)
+      .digest('hex');
+    
+    const similarity = this.calculateStringSimilarity(signature, expected);
+    return similarity > 0.8 && signature !== expected;
+  }
+
+  detectQRISDynamicManipulation(transaction) {
+    if (!transaction.qrString || !transaction.qrScanTime) return false;
+    
+    const scanTime = new Date(transaction.qrScanTime).getTime();
+    const processTime = new Date(transaction.timestamp).getTime();
+    const timeDiff = processTime - scanTime;
+    
+    if (timeDiff > 2 * 60 * 1000) {
+      return true;
+    }
+    
+    const originalQR = transaction.originalQR;
+    const currentQR = transaction.qrString;
+    
+    if (originalQR && currentQR && originalQR !== currentQR) {
+      return true;
+    }
+    
+    return false;
+  }
+
+  detectSessionTokenPrediction(transaction) {
+    const sessionToken = transaction.headers?.['x-session-token'];
+    
+    if (!sessionToken) return false;
+    
+    // Check if token follows expected pattern
+    const isHex = /^[0-9a-fA-F]+$/.test(sessionToken);
+    const expectedLength = 64; // 32 bytes hex
+    
+    if (isHex && sessionToken.length === expectedLength) {
+      // Check if token looks randomly generated or predictable
+      const entropy = this.calculateEntropy(sessionToken);
+      if (entropy < 3.0) {
+        return true; // Low entropy = predictable
+      }
+    }
+    
+    return false;
+  }
+
+  detectHeaderInjection(transaction) {
+    const headers = transaction.headers || {};
+    
+    // Check for malicious header patterns
+    const maliciousPatterns = [
+      /<script>/i,
+      /javascript:/i,
+      /on\w+=/i,
+      /union.*select/i,
+      /drop.*table/i,
+      /exec.*\(/i
+    ];
+    
+    for (const [key, value] of Object.entries(headers)) {
+      const headerStr = `${key}: ${value}`;
+      for (const pattern of maliciousPatterns) {
+        if (pattern.test(headerStr)) {
+          return true;
+        }
+      }
+    }
+    
+    return false;
+  }
+
+  // ========== ENHANCED CORE DETECTION ==========
   async detectMLAttacks(transaction) {
     const detections = [];
     let totalRisk = 0;
@@ -196,29 +357,17 @@ class MLAttackDetection {
       try {
         let isDetected = false;
         
-        switch (name) {
-          case 'QRIS_LENGTH_ANOMALY':
-          case 'QRIS_EMV_INVALID':
-          case 'QRIS_CHECKSUM_TAMPERING':
-            if (transaction.qrString) {
-              isDetected = detector.detect(transaction.qrString);
-            }
-            break;
-            
-          case 'JWT_NONE_ALGORITHM':
-            if (transaction.token) {
-              isDetected = detector.detect(transaction.token);
-            }
-            break;
-            
-          case 'SIGNATURE_ANOMALY':
-            if (transaction.signature) {
-              isDetected = detector.detect(transaction.signature);
-            }
-            break;
-            
-          default:
-            isDetected = detector.detect(transaction);
+        if (name.startsWith('QRIS_') && transaction.qrString) {
+          isDetected = detector.detect(transaction.qrString);
+        } else if (name === 'JWT_NONE_ALGORITHM' && transaction.token) {
+          isDetected = detector.detect(transaction.token);
+        } else if (name === 'SIGNATURE_ANOMALY' && transaction.signature) {
+          isDetected = detector.detect(transaction.signature);
+        } else if (name.startsWith('SESSION_') || name.startsWith('DEVICE_') || 
+                   name.startsWith('TIMESTAMP_') || name.startsWith('HEADER_')) {
+          isDetected = detector.detect(transaction);
+        } else {
+          isDetected = detector.detect(transaction);
         }
         
         if (isDetected) {
@@ -239,6 +388,9 @@ class MLAttackDetection {
     const behaviorScore = await this.analyzeBehavior(transaction);
     totalRisk += behaviorScore;
     
+    // Update session tracking
+    this.updateSessionTracking(transaction);
+    
     // Risk scoring
     const riskLevel = this.getRiskLevel(totalRisk);
     
@@ -249,30 +401,31 @@ class MLAttackDetection {
       riskLevel,
       recommendation: this.getRecommendation(detections, riskLevel),
       timestamp: new Date().toISOString(),
-      confidence: this.calculateConfidence(detections)
+      confidence: this.calculateConfidence(detections),
+      enhancedDetection: detections.some(d => 
+        d.attackType.startsWith('SESSION_') || 
+        d.attackType.startsWith('DEVICE_')
+      )
     };
   }
 
   analyzeBehavior(transaction) {
     let behaviorScore = 0;
     
-    // Time-based analysis
     const hour = new Date().getHours();
-    if (hour < 6 || hour > 23) { // Outside normal business hours
+    if (hour < 6 || hour > 23) {
       behaviorScore += 0.1;
     }
     
-    // Amount analysis
-    if (transaction.amount > 5000000) { // Large transaction
+    if (transaction.amount > 5000000) {
       behaviorScore += 0.1;
     }
     
-    // Velocity analysis (if we have previous transactions)
     if (this.transactionHistory.has(transaction.merchantId)) {
       const history = this.transactionHistory.get(transaction.merchantId);
-      if (history.length > 10) { // Active merchant
+      if (history.length > 10) {
         const avgAmount = history.reduce((sum, t) => sum + t.amount, 0) / history.length;
-        if (transaction.amount > avgAmount * 3) { // 3x average
+        if (transaction.amount > avgAmount * 3) {
           behaviorScore += 0.2;
         }
       }
@@ -281,8 +434,29 @@ class MLAttackDetection {
     return behaviorScore;
   }
 
-  // ========== HELPER METHODS ==========
+  updateSessionTracking(transaction) {
+    const sessionToken = transaction.headers?.['x-session-token'];
+    const timestamp = parseInt(transaction.headers?.['x-timestamp'] || '0');
+    
+    if (sessionToken && timestamp) {
+      // Track timestamp sequence
+      this.lastTimestamps.set(sessionToken, timestamp);
+      
+      // Track session usage
+      if (!this.sessionHistory.has(sessionToken)) {
+        this.sessionHistory.set(sessionToken, []);
+      }
+      this.sessionHistory.get(sessionToken).push(Date.now());
+      
+      // Keep only last 100 uses per session
+      const uses = this.sessionHistory.get(sessionToken);
+      if (uses.length > 100) {
+        uses.splice(0, uses.length - 100);
+      }
+    }
+  }
 
+  // ========== HELPER METHODS ==========
   calculateEntropy(str) {
     const freq = {};
     for (let i = 0; i < str.length; i++) {
@@ -302,6 +476,33 @@ class MLAttackDetection {
   hashQR(qrString) {
     if (!qrString) return '';
     return crypto.createHash('sha256').update(qrString).digest('hex');
+  }
+
+  getSessionUseCount(sessionToken, timeWindow) {
+    let count = 0;
+    const now = Date.now();
+    
+    if (this.sessionHistory.has(sessionToken)) {
+      const uses = this.sessionHistory.get(sessionToken);
+      count = uses.filter(useTime => now - useTime < timeWindow).length;
+    }
+    
+    return count;
+  }
+
+  calculateStringSimilarity(a, b) {
+    if (a === b) return 1.0;
+    if (a.length === 0 || b.length === 0) return 0.0;
+    
+    const longer = a.length > b.length ? a : b;
+    const shorter = a.length > b.length ? b : a;
+    
+    let matches = 0;
+    for (let i = 0; i < shorter.length; i++) {
+      if (a[i] === b[i]) matches++;
+    }
+    
+    return matches / longer.length;
   }
 
   getRiskLevel(score) {
@@ -334,7 +535,6 @@ class MLAttackDetection {
     const totalRisk = detections.reduce((sum, d) => sum + d.riskScore, 0);
     const avgRisk = totalRisk / detections.length;
     
-    // Higher confidence if multiple detections with high risk
     if (detections.length >= 3 && avgRisk > 0.5) {
       return 0.9;
     }
@@ -344,13 +544,12 @@ class MLAttackDetection {
     return 0.5;
   }
 
-  // ========== DEBUG & MONITORING ==========
-
   getDetectionStats() {
     const stats = {
       totalPatterns: this.attackPatterns.size,
       activeMerchants: this.transactionHistory.size,
       totalTransactions: 0,
+      activeSessions: this.sessionHistory.size,
       recentDetections: 0
     };
     
@@ -368,10 +567,63 @@ class MLAttackDetection {
     }
     return false;
   }
+
+  resetSessionHistory(sessionToken) {
+    if (this.sessionHistory.has(sessionToken)) {
+      this.sessionHistory.delete(sessionToken);
+      return true;
+    }
+    return false;
+  }
 }
 
-// ========== INSTANTIATE ML DETECTION ==========
+// ========== INSTANTIATE ENHANCED ML DETECTION ==========
 const mlDetector = new MLAttackDetection();
+
+// ========== SESSION MANAGEMENT ==========
+function generateSessionToken(deviceHash) {
+  return crypto.randomBytes(32).toString('hex');
+}
+
+function validateSession(headers) {
+  const sessionToken = headers['x-session-token'];
+  const timestamp = parseInt(headers['x-timestamp'] || '0');
+  const signature = headers['x-signature'];
+  const deviceHash = headers['x-device-hash'];
+  
+  // Check if session exists
+  const session = activeSessions.get(sessionToken);
+  if (!session) {
+    return { valid: false, error: 'Invalid session token' };
+  }
+  
+  // Check expiry
+  if (Date.now() > session.expiresAt) {
+    activeSessions.delete(sessionToken);
+    return { valid: false, error: 'Session expired' };
+  }
+  
+  // Validate signature
+  const expectedSignature = crypto
+    .createHash('sha256')
+    .update(`${sessionToken}|${timestamp}|${deviceHash}`)
+    .digest('hex');
+    
+  if (signature !== expectedSignature) {
+    return { valid: false, error: 'Invalid signature' };
+  }
+  
+  // Validate timestamp
+  const timeDiff = Math.abs(Date.now() - timestamp);
+  if (timeDiff > 2 * 60 * 1000) {
+    return { valid: false, error: 'Timestamp expired' };
+  }
+  
+  // Update session activity
+  session.lastActivity = Date.now();
+  
+  return { valid: true, session };
+}
 
 // ========== WEBSOCKET FOR REAL-TIME ALERTS ==========
 const activeConnections = new Map();
@@ -404,7 +656,8 @@ wss.on('connection', (ws, req) => {
         ws.send(JSON.stringify({ 
           type: 'PONG', 
           timestamp: new Date().toISOString(),
-          detectionStats: mlDetector.getDetectionStats()
+          detectionStats: mlDetector.getDetectionStats(),
+          activeSessions: activeSessions.size
         }));
       }
       
@@ -430,7 +683,8 @@ function sendMLAlert(merchantId, detectionResult) {
           timestamp: new Date().toISOString(),
           detection: detectionResult,
           action: detectionResult.recommendation,
-          severity: detectionResult.riskLevel
+          severity: detectionResult.riskLevel,
+          enhancedDetection: detectionResult.enhancedDetection || false
         }));
         notified++;
       } catch (error) {
@@ -448,15 +702,21 @@ function sendMLAlert(merchantId, detectionResult) {
 app.get('/', (req, res) => {
   res.json({
     status: 'online',
-    service: 'QRIS ML Attack Detection API',
-    version: '1.0.0',
+    service: 'QRIS Enhanced ML Attack Detection API',
+    version: '2.0.0',
     timestamp: new Date().toISOString(),
     detectionStats: mlDetector.getDetectionStats(),
+    sessionStats: {
+      activeSessions: activeSessions.size,
+      totalPatterns: mlDetector.attackPatterns.size
+    },
     endpoints: {
       detect: '/api/ml/detect (POST)',
+      sessionInit: '/api/session/init (POST)',
       stats: '/api/ml/stats (GET)',
       reset: '/api/ml/reset/:merchantId (DELETE)',
-      health: '/health (GET)'
+      health: '/health (GET)',
+      testAttack: '/api/ml/test-attack (POST)'
     }
   });
 });
@@ -467,15 +727,72 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
     connections: activeConnections.size,
-    detectionEngine: 'ACTIVE'
+    activeSessions: activeSessions.size,
+    detectionEngine: 'ENHANCED_ACTIVE'
   });
 });
 
-// ========== ML DETECTION ENDPOINT ==========
+// ========== SESSION INITIALIZATION ENDPOINT ==========
+app.post("/api/session/init", async (req, res) => {
+  console.log('\n🔑 SESSION INITIALIZATION REQUEST');
+  
+  const { deviceHash, deviceModel, timestamp } = req.body;
+  
+  // Validate timestamp
+  const timeDiff = Date.now() - parseInt(timestamp);
+  if (Math.abs(timeDiff) > 5 * 60 * 1000) {
+    return res.status(400).json({ 
+      success: false, 
+      error: 'Invalid timestamp' 
+    });
+  }
+  
+  // Generate session
+  const sessionToken = generateSessionToken(deviceHash);
+  const expiresIn = 5 * 60; // 5 minutes
+  
+  activeSessions.set(sessionToken, {
+    deviceHash,
+    deviceModel,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + (expiresIn * 1000),
+    lastActivity: Date.now()
+  });
+  
+  console.log(`✅ Session created: ${sessionToken.substring(0, 8)}...`);
+  
+  res.json({
+    success: true,
+    sessionToken,
+    expiresIn,
+    timestamp: new Date().toISOString()
+  });
+});
 
+// ========== ENHANCED ML DETECTION ENDPOINT ==========
 app.post("/api/ml/detect", async (req, res) => {
-  console.log('\n🤖 ML ATTACK DETECTION REQUEST');
+  console.log('\n🤖 ENHANCED ML ATTACK DETECTION REQUEST');
   console.log('='.repeat(60));
+  
+  // Extract headers for session validation
+  const headers = {
+    'x-session-token': req.headers['x-session-token'],
+    'x-timestamp': req.headers['x-timestamp'],
+    'x-signature': req.headers['x-signature'],
+    'x-device-hash': req.headers['x-device-hash']
+  };
+  
+  // Validate session first
+  const sessionValidation = validateSession(headers);
+  if (!sessionValidation.valid) {
+    console.log(`❌ Session validation failed: ${sessionValidation.error}`);
+    return res.status(401).json({
+      success: false,
+      error: 'SESSION_VALIDATION_FAILED',
+      message: sessionValidation.error,
+      timestamp: new Date().toISOString()
+    });
+  }
   
   const transaction = {
     id: req.body.transactionId || `TX${Date.now()}`,
@@ -489,8 +806,11 @@ app.post("/api/ml/detect", async (req, res) => {
     terminalId: req.body.terminalId,
     location: req.body.location,
     deviceId: req.body.deviceId,
+    qrScanTime: req.body.qrScanTime,
+    originalQR: req.body.originalQR,
     token: req.headers.authorization?.replace('Bearer ', ''),
     signature: req.headers['x-signature'],
+    headers: headers,
     timestamp: new Date().toISOString()
   };
   
@@ -499,17 +819,19 @@ app.post("/api/ml/detect", async (req, res) => {
   console.log('   Merchant:', transaction.merchantName);
   console.log('   Amount: Rp', transaction.amount.toLocaleString());
   console.log('   QR Length:', transaction.qrString?.length || 0);
+  console.log('   Session:', headers['x-session-token']?.substring(0, 8) + '...');
   console.log('='.repeat(60));
   
   try {
-    // Run ML detection
+    // Run enhanced ML detection
     const detectionResult = await mlDetector.detectMLAttacks(transaction);
     
     // Log detection results
-    console.log('🔍 ML Detection Results:');
+    console.log('🔍 Enhanced ML Detection Results:');
     console.log('   Attacks Detected:', detectionResult.attacksDetected);
     console.log('   Risk Level:', detectionResult.riskLevel);
     console.log('   Risk Score:', detectionResult.riskScore.toFixed(2));
+    console.log('   Enhanced Patterns:', detectionResult.enhancedDetection);
     
     if (detectionResult.detections.length > 0) {
       console.log('   Detected Attacks:');
@@ -529,6 +851,7 @@ app.post("/api/ml/detect", async (req, res) => {
       success: true,
       transactionId: transaction.id,
       detection: detectionResult,
+      sessionValid: true,
       timestamp: new Date().toISOString(),
       recommendation: detectionResult.recommendation
     };
@@ -537,18 +860,18 @@ app.post("/api/ml/detect", async (req, res) => {
     if (process.env.NODE_ENV !== 'production') {
       response.debug = {
         qrLength: transaction.qrString?.length,
-        hasToken: !!transaction.token,
-        hasSignature: !!transaction.signature,
-        transactionHistory: mlDetector.transactionHistory.has(transaction.merchantId) 
-          ? mlDetector.transactionHistory.get(transaction.merchantId).length 
-          : 0
+        hasSession: !!headers['x-session-token'],
+        sessionAge: sessionValidation.session ? 
+          Date.now() - sessionValidation.session.createdAt : 0,
+        enhancedDetection: detectionResult.enhancedDetection,
+        detectedPatterns: detectionResult.detections.map(d => d.attackType)
       };
     }
     
     res.json(response);
     
   } catch (error) {
-    console.error('❌ ML Detection failed:', error);
+    console.error('❌ Enhanced ML Detection failed:', error);
     
     res.status(500).json({
       success: false,
@@ -560,17 +883,14 @@ app.post("/api/ml/detect", async (req, res) => {
 });
 
 // ========== ML STATISTICS ENDPOINT ==========
-
 app.get("/api/ml/stats", (req, res) => {
   const stats = mlDetector.getDetectionStats();
   
-  // Calculate detection rates from recent history
   let totalTransactions = 0;
   let totalDetections = 0;
   
   mlDetector.transactionHistory.forEach(history => {
     totalTransactions += history.length;
-    // Simple heuristic: if transaction amount > 5M, count as possible detection
     totalDetections += history.filter(t => t.amount > 5000000).length;
   });
   
@@ -584,14 +904,17 @@ app.get("/api/ml/stats", (req, res) => {
       ...stats,
       detectionRate: detectionRate.toFixed(2) + '%',
       activeConnections: activeConnections.size,
-      attackPatterns: Array.from(mlDetector.attackPatterns.keys())
+      activeSessions: activeSessions.size,
+      attackPatterns: Array.from(mlDetector.attackPatterns.keys()),
+      enhancedPatterns: Array.from(mlDetector.attackPatterns.keys())
+        .filter(p => p.startsWith('SESSION_') || p.startsWith('DEVICE_') || 
+                     p.startsWith('TIMESTAMP_') || p.startsWith('HEADER_'))
     },
     timestamp: new Date().toISOString()
   });
 });
 
 // ========== RESET MERCHANT HISTORY ==========
-
 app.delete("/api/ml/reset/:merchantId", (req, res) => {
   const merchantId = req.params.merchantId;
   
@@ -616,12 +939,11 @@ app.delete("/api/ml/reset/:merchantId", (req, res) => {
   });
 });
 
-// ========== TEST ENDPOINT FOR ATTACK SIMULATION ==========
-
+// ========== ENHANCED TEST ENDPOINT FOR ATTACK SIMULATION ==========
 app.post("/api/ml/test-attack", (req, res) => {
-  console.log('\n🧪 TESTING ML ATTACK DETECTION');
+  console.log('\n🧪 ENHANCED TESTING ML ATTACK DETECTION');
   
-  // Generate test attack patterns
+  // Enhanced test cases including session-based attacks
   const testCases = [
     {
       name: 'QRIS Manipulation Attack',
@@ -633,22 +955,48 @@ app.post("/api/ml/test-attack", (req, res) => {
       }
     },
     {
-      name: 'JWT None Algorithm Attack',
+      name: 'Session Replay Attack',
       transaction: {
         qrString: '000201010212...6304ABCD',
-        amount: 5000000,
+        amount: 500000,
         merchantId: 'TEST_MERCHANT',
-        customerId: 'TEST_ATTACKER',
-        token: 'eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.'
+        customerId: 'SESSION_ATTACKER',
+        headers: {
+          'x-session-token': 'replaytoken123',
+          'x-timestamp': Date.now().toString(),
+          'x-signature': 'fake_signature',
+          'x-device-hash': 'spoofed_device_hash'
+        }
       }
     },
     {
-      name: 'High Frequency Attack',
+      name: 'Timestamp Manipulation Attack',
       transaction: {
         qrString: '000201010212...6304ABCD',
-        amount: 100000,
+        amount: 1500000,
         merchantId: 'TEST_MERCHANT',
-        customerId: 'REPEAT_CUSTOMER'
+        customerId: 'TIME_ATTACKER',
+        headers: {
+          'x-session-token': 'testtoken123',
+          'x-timestamp': (Date.now() - 3600000).toString(), // 1 hour ago
+          'x-signature': 'fake_signature_456',
+          'x-device-hash': 'device_hash_123'
+        }
+      }
+    },
+    {
+      name: 'Device Fingerprint Spoofing',
+      transaction: {
+        qrString: '000201010212...6304ABCD',
+        amount: 800000,
+        merchantId: 'TEST_MERCHANT',
+        customerId: 'DEVICE_SPOOFER',
+        headers: {
+          'x-session-token': 'legit_token',
+          'x-timestamp': Date.now().toString(),
+          'x-signature': 'valid_signature',
+          'x-device-hash': 'different_device_hash' // Different from session
+        }
       }
     }
   ];
@@ -659,7 +1007,9 @@ app.post("/api/ml/test-attack", (req, res) => {
       testCase: testCase.name,
       detected: detection.attacksDetected,
       riskLevel: detection.riskLevel,
-      attacks: detection.detections.map(d => d.attackType)
+      riskScore: detection.riskScore.toFixed(2),
+      attacks: detection.detections.map(d => d.attackType),
+      enhanced: detection.enhancedDetection || false
     };
   });
   
@@ -669,40 +1019,146 @@ app.post("/api/ml/test-attack", (req, res) => {
     summary: {
       totalTests: testCases.length,
       attacksDetected: results.filter(r => r.detected).length,
-      effectiveness: (results.filter(r => r.detected).length / testCases.length * 100).toFixed(1) + '%'
+      enhancedDetections: results.filter(r => r.enhanced).length,
+      effectiveness: (results.filter(r => r.detected).length / testCases.length * 100).toFixed(1) + '%',
+      enhancedEffectiveness: results.filter(r => r.enhanced).length > 0 ? 
+        (results.filter(r => r.enhanced && r.detected).length / results.filter(r => r.enhanced).length * 100).toFixed(1) + '%' : 'N/A'
     },
     timestamp: new Date().toISOString()
   });
 });
 
-// ========== SERVER STARTUP ==========
+// ========== TEST BANK CALLBACK ENDPOINT (for Flutter) ==========
+app.post("/api/test/bca-callback", async (req, res) => {
+  console.log('\n🏦 TEST BCA CALLBACK SIMULATION');
+  
+  const {
+    qrString,
+    amount,
+    merchantName,
+    customerName,
+    city,
+    bankCode,
+    merchantId
+  } = req.body;
+  
+  console.log('📤 Received from Flutter:');
+  console.log('   Bank:', bankCode);
+  console.log('   Merchant:', merchantName);
+  console.log('   Amount: Rp', amount?.toLocaleString());
+  console.log('   Customer:', customerName);
+  console.log('   City:', city);
+  
+  // Run ML detection on the callback
+  const mlDetection = await mlDetector.detectMLAttacks({
+    transactionId: `CBTEST_${Date.now()}`,
+    qrString: qrString,
+    amount: parseFloat(amount) || 0,
+    merchantId: merchantId,
+    merchantName: merchantName,
+    customerName: customerName,
+    customerId: customerName?.replace(/\s+/g, '_').toUpperCase(),
+    location: city,
+    timestamp: new Date().toISOString()
+  });
+  
+  // Generate response
+  const response = {
+    success: true,
+    message: 'Bank callback simulated successfully',
+    transactionId: `TX${Date.now()}_${Math.random().toString(36).substr(2, 6).toUpperCase()}`,
+    authCode: `AUTH${Date.now().toString().substr(8, 6)}`,
+    note: mlDetection.riskScore > 0.7 
+      ? '⚠️ High risk detected - Transaction flagged' 
+      : '✅ Transaction processed normally',
+    mlCheck: {
+      performed: true,
+      riskScore: mlDetection.riskScore,
+      riskLevel: mlDetection.riskLevel,
+      passed: mlDetection.riskScore < 0.7
+    },
+    bankResponse: {
+      responseCode: mlDetection.riskScore < 0.7 ? '0000' : '0500',
+      responseMessage: mlDetection.riskScore < 0.7 ? 'APPROVED' : 'DECLINED',
+      rrn: `RRN${Date.now().toString().substr(5)}`,
+      stan: (100000 + Math.floor(Math.random() * 900000)).toString()
+    },
+    timestamp: new Date().toISOString()
+  };
+  
+  console.log('📤 Response to Flutter:');
+  console.log('   Transaction ID:', response.transactionId);
+  console.log('   Risk Score:', mlDetection.riskScore.toFixed(2));
+  console.log('   Risk Level:', mlDetection.riskLevel);
+  
+  res.json(response);
+});
 
+// ========== BANK CALLBACK ENDPOINT ==========
+app.post("/api/bank/callback", async (req, res) => {
+  console.log('\n🏦 GENERAL BANK CALLBACK');
+  
+  const transaction = req.body;
+  
+  console.log('📤 Bank callback received:', transaction.bankCode);
+  
+  // Simulate processing delay
+  setTimeout(() => {
+    const response = {
+      success: true,
+      transactionId: `BANK_TX_${Date.now()}`,
+      bankReference: `BANK_REF_${Math.random().toString(36).substr(2, 9).toUpperCase()}`,
+      status: 'PROCESSED',
+      timestamp: new Date().toISOString(),
+      note: 'Bank callback processed successfully'
+    };
+    
+    res.json(response);
+  }, 1000);
+});
+
+// ========== SERVER STARTUP ==========
 const PORT = process.env.PORT || 10000;
 
 server.listen(PORT, () => {
-  console.log('\n' + '='.repeat(70));
-  console.log('🚀 ML ATTACK DETECTION SERVER STARTED');
-  console.log('='.repeat(70));
+  console.log('\n' + '='.repeat(80));
+  console.log('🚀 ENHANCED ML ATTACK DETECTION SERVER STARTED');
+  console.log('='.repeat(80));
   console.log(`📡 HTTP Server: http://localhost:${PORT}`);
   console.log(`🔌 WebSocket Server: ws://localhost:${PORT}`);
-  console.log('='.repeat(70));
-  console.log('🤖 ML DETECTION ENGINE: ACTIVE');
-  console.log(`   Attack Patterns: ${mlDetector.attackPatterns.size}`);
-  console.log('   Detection Types:');
-  Array.from(mlDetector.attackPatterns.keys()).forEach(pattern => {
-    console.log(`     • ${pattern}`);
-  });
-  console.log('='.repeat(70));
+  console.log('='.repeat(80));
+  console.log('🤖 ENHANCED ML DETECTION ENGINE: ACTIVE');
+  console.log(`   Total Attack Patterns: ${mlDetector.attackPatterns.size}`);
+  console.log('   Original Patterns:');
+  Array.from(mlDetector.attackPatterns.keys())
+    .filter(p => !p.startsWith('SESSION_') && !p.startsWith('DEVICE_') && 
+                  !p.startsWith('TIMESTAMP_') && !p.startsWith('HEADER_'))
+    .forEach(pattern => {
+      console.log(`     • ${pattern}`);
+    });
+  console.log('   Enhanced Patterns (Session-based):');
+  Array.from(mlDetector.attackPatterns.keys())
+    .filter(p => p.startsWith('SESSION_') || p.startsWith('DEVICE_') || 
+                  p.startsWith('TIMESTAMP_') || p.startsWith('HEADER_'))
+    .forEach(pattern => {
+      console.log(`     • ${pattern}`);
+    });
+  console.log('='.repeat(80));
   console.log('\n📋 AVAILABLE ENDPOINTS:');
-  console.log('   POST /api/ml/detect          - Detect ML attacks in transaction');
+  console.log('   POST /api/session/init      - Initialize session (no API key)');
+  console.log('   POST /api/ml/detect         - Enhanced ML attack detection');
   console.log('   GET  /api/ml/stats          - Get ML detection statistics');
   console.log('   DELETE /api/ml/reset/:id    - Reset merchant history');
   console.log('   POST /api/ml/test-attack    - Test attack detection');
+  console.log('   POST /api/test/bca-callback - Test BCA callback (Flutter)');
+  console.log('   POST /api/bank/callback     - General bank callback');
   console.log('   GET  /health                - Health check');
-  console.log('='.repeat(70));
-  console.log('\n⚠️  IMPORTANT: This server is for educational purposes only.');
-  console.log('   Use responsibly for security testing and research.');
-  console.log('='.repeat(70));
+  console.log('='.repeat(80));
+  console.log('\n⚠️  IMPORTANT: Enhanced security with session-based authentication');
+  console.log('   No static API keys - Dynamic session tokens only');
+  console.log('   Device fingerprinting + timestamp validation');
+  console.log('   Real-time ML attack detection');
+  console.log('='.repeat(80));
 });
 
 // Error handling
