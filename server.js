@@ -13,777 +13,375 @@ const wss = new WebSocket.Server({ server });
 app.use(cors());
 app.use(express.json());
 
-// ========== REAL FINANCIAL AUTHORITY SYSTEM ==========
-class RealFinancialAuthority {
+// ========== ML ATTACK DETECTION ENGINE ==========
+class MLAttackDetection {
   constructor() {
-    console.log('\n🏛️  REAL FINANCIAL AUTHORITY SYSTEM');
-    console.log('='.repeat(70));
-    console.log('🔐 Otoritas: Bank Indonesia & OJK Compliant');
-    console.log('💰 Settlement: Real Ledger & Interbank Clearing');
-    console.log('⚖️  Legal: Contractual Obligation & Regulatory');
-    console.log('='.repeat(70));
-    
-    this.initializeFinancialInfrastructure();
+    console.log('🤖 ML Attack Detection Engine Initialized');
+    this.attackPatterns = new Map();
+    this.transactionHistory = new Map(); // merchantId -> [transactions]
+    this.loadAttackPatterns();
   }
 
-  // ========== REAL FINANCIAL INFRASTRUCTURE ==========
-  initializeFinancialInfrastructure() {
-    // 1. SETTLEMENT ACCOUNT (REAL - dengan deposito jaminan)
-    this.settlementAccount = {
-      accountNumber: '8888800001234567', // Settlement account BCA
-      bankName: 'Bank Central Asia',
-      bicCode: 'CENAIDJA', // BIC/ SWIFT code
-      currency: 'IDR',
-      balance: 1000000000, // 1 Milyar deposit jaminan
-      minBalance: 500000000, // Minimal 500 juta
-      regulatedBy: ['Bank Indonesia', 'OJK'],
-      insurance: {
-        provider: 'LPS (Lembaga Penjamin Simpanan)',
-        coverage: 'Rp 2.000.000.000',
-        certificate: 'INS-2024-QRIS-001'
-      }
-    };
-
-    // 2. LEGAL FRAMEWORK
-    this.legalFramework = {
-      license: {
-        number: 'QRIS/Acquirer/2024/001',
-        issuer: 'Bank Indonesia',
-        validUntil: '2025-12-31',
-        type: 'Penyelenggara QRIS - Acquirer',
-        scope: 'Acquiring, Clearing, Settlement'
-      },
-      contracts: {
-        merchantAgreement: {
-          template: 'STANDARD QRIS MERCHANT AGREEMENT',
-          clauses: [
-            'Acquirer bertanggung jawab atas settlement',
-            'Merchant menerima jaminan pembayaran',
-            'Dispute resolution melalui BI Arbitration'
-          ]
-        },
-        issuerAgreement: {
-          template: 'INTERBANK QRIS AGREEMENT',
-          signedWith: ['BCA', 'BRI', 'MANDIRI', 'BNI', 'CIMB', 'DANAMON']
-        }
-      }
-    };
-
-    // 3. REAL-TIME LEDGER SYSTEM
-    this.ledger = {
-      system: 'DOUBLE-ENTRY ACCOUNTING LEDGER',
-      accounts: {
-        settlementAsset: '101.001', // Asset - Settlement Account
-        receivableMerchant: '102.001', // Piutang Merchant
-        payableIssuer: '201.001', // Hutang ke Issuer
-        revenueFee: '301.001', // Pendapatan Fee
-        capital: '401.001' // Modal
-      },
-      lastReconciliation: new Date().toISOString(),
-      biReported: true
-    };
-
-    // 4. SECURITY INFRASTRUCTURE
-    this.security = {
-      hsm: {
-        model: 'Thales PayShield 9000',
-        location: 'Data Center Tier III Jakarta',
-        certified: 'FIPS 140-2 Level 3',
-        keyStorage: 'PKCS#11 with Hardware Security Module'
-      },
-      mtls: {
-        enabled: true,
-        certificate: {
-          issuer: 'DigiCert Global Root CA',
-          san: ['acquirer.qris.id', '*.qris-payment.net'],
-          expiry: '2025-06-30'
-        }
-      },
-      network: {
-        connection: 'Leased Line to BI-SSSS (Systemically Important Payment System)',
-        backup: 'VPN with Multi-Factor Authentication',
-        monitoring: '24/7 SOC with SIEM'
-      }
-    };
-
-    // 5. REAL RISK ENGINE
-    this.riskEngine = new RealRiskEngine();
-    
-    console.log('✅ Financial Infrastructure Initialized');
-    console.log('   Settlement Account:', this.settlementAccount.accountNumber);
-    console.log('   Balance: Rp', this.settlementAccount.balance.toLocaleString());
-    console.log('   Regulated by:', this.settlementAccount.regulatedBy.join(', '));
-  }
-
-  // ========== REAL TRANSACTION PROCESSING ==========
-  async processWithFinancialAuthority(transaction) {
-    console.log('\n⚖️  PROCESSING WITH FINANCIAL AUTHORITY');
-    console.log('='.repeat(70));
-    
-    // STEP 1: VALIDATE LEGAL AUTHORITY
-    const legalValidation = this.validateLegalAuthority(transaction);
-    if (!legalValidation.valid) {
-      throw new Error(`LEGAL REJECTION: ${legalValidation.reason}`);
-    }
-
-    // STEP 2: RISK ASSESSMENT (REAL)
-    const riskAssessment = await this.riskEngine.assessRisk(transaction);
-    if (riskAssessment.level === 'HIGH') {
-      throw new Error(`RISK REJECTION: ${riskAssessment.reasons.join(', ')}`);
-    }
-
-    // STEP 3: FUNDS VERIFICATION (REAL - simulate dengan issuer)
-    const fundsAvailable = await this.verifyFundsWithIssuer(transaction);
-    if (!fundsAvailable) {
-      throw new Error('INSUFFICIENT_FUNDS: Customer account has insufficient balance');
-    }
-
-    // STEP 4: CREATE BINDING FINANCIAL OBLIGATION
-    const financialObligation = this.createFinancialObligation(transaction);
-    
-    // STEP 5: RECORD IN LEDGER (DOUBLE-ENTRY)
-    const ledgerEntry = this.recordInLedger(transaction, financialObligation);
-    
-    // STEP 6: HOLD FUNDS (REAL - dengan issuer via clearing)
-    const fundHold = await this.placeFundHold(transaction);
-    
-    // STEP 7: ISSUE LEGALLY BINDING AUTHORIZATION
-    const authorization = this.issueAuthorization(transaction, {
-      legalValidation,
-      riskAssessment,
-      fundsAvailable,
-      financialObligation,
-      ledgerEntry,
-      fundHold
+  loadAttackPatterns() {
+    // QRIS manipulation patterns
+    this.attackPatterns.set('QRIS_LENGTH_ANOMALY', {
+      detect: (qrData) => qrData.length < 100 || qrData.length > 512,
+      risk: 0.3,
+      description: 'QRIS length outside normal range (100-512 chars)'
     });
 
-    // STEP 8: GENERATE SETTLEMENT OBLIGATION
-    const settlement = this.generateSettlementObligation(transaction, authorization);
+    this.attackPatterns.set('QRIS_EMV_INVALID', {
+      detect: (qrData) => !qrData.startsWith('000201'),
+      risk: 0.4,
+      description: 'Invalid EMV QRIS format'
+    });
 
-    return {
-      success: true,
-      authorization: {
-        ...authorization,
-        legallyBinding: true,
-        financialAuthority: 'BANK INDONESIA LICENSED',
-        settlementGuarantee: 'UNCONDITIONAL PAYMENT OBLIGATION'
-      },
-      financials: {
-        obligation: financialObligation,
-        ledger: ledgerEntry,
-        settlement: settlement,
-        riskScore: riskAssessment.score
-      },
-      regulatory: {
-        biCompliant: true,
-        ojkRegistered: true,
-        lpsInsured: true,
-        reportReference: `BI/QRIS/${new Date().getFullYear()}/${transaction.id}`
-      }
-    };
+    this.attackPatterns.set('QRIS_CHECKSUM_TAMPERING', {
+      detect: (qrData) => !qrData.endsWith('6304'),
+      risk: 0.6,
+      description: 'QRIS checksum validation failed'
+    });
+
+    this.attackPatterns.set('AMOUNT_MANIPULATION', {
+      detect: (transaction) => this.detectAmountTampering(transaction),
+      risk: 0.5,
+      description: 'Suspicious amount field manipulation'
+    });
+
+    this.attackPatterns.set('JWT_NONE_ALGORITHM', {
+      detect: (token) => this.detectJWTNoneAlg(token),
+      risk: 0.8,
+      description: 'JWT with "none" algorithm detected'
+    });
+
+    this.attackPatterns.set('SIGNATURE_ANOMALY', {
+      detect: (signature) => this.detectSignatureAnomaly(signature),
+      risk: 0.7,
+      description: 'Signature pattern anomaly'
+    });
+
+    this.attackPatterns.set('HIGH_FREQUENCY_ATTACK', {
+      detect: (transaction) => this.detectHighFrequency(transaction),
+      risk: 0.4,
+      description: 'High frequency transaction pattern'
+    });
+
+    this.attackPatterns.set('AMOUNT_ROUNDING_ATTACK', {
+      detect: (transaction) => this.detectAmountRounding(transaction),
+      risk: 0.3,
+      description: 'Suspicious round amount patterns'
+    });
   }
 
-  // ========== REAL LEGAL VALIDATION ==========
-  validateLegalAuthority(transaction) {
-    // Check if merchant exists and has active contract
-    if (!transaction.merchantId || transaction.merchantId.trim() === '') {
-      return {
-        valid: false,
-        reason: 'Merchant ID is required'
-      };
-    }
+  // ========== DETECTION METHODS ==========
 
-    // Check transaction amount limits (max 10 juta sesuai BI Regulation)
-    if (transaction.amount > 10000000) {
-      return {
-        valid: false,
-        reason: 'Transaction amount exceeds BI limit (Rp 10,000,000)'
-      };
-    }
-
-    // Check minimum amount
-    if (transaction.amount < 1000) {
-      return {
-        valid: false,
-        reason: 'Transaction amount is too low (minimum Rp 1,000)'
-      };
-    }
-
-    // Check if customer name is provided
-    if (!transaction.customerName || transaction.customerName.trim() === '') {
-      return {
-        valid: false,
-        reason: 'Customer name is required for financial authority processing'
-      };
-    }
-
-    // Basic AML check (simulated)
-    const amlCheck = this.performAMLCheck(transaction);
-    if (!amlCheck) {
-      return {
-        valid: false,
-        reason: 'AML check failed'
-      };
-    }
-
-    return {
-      valid: true,
-      details: {
-        merchantValid: true,
-        amountValid: true,
-        customerValid: true,
-        amlValid: true
-      },
-      authority: this.legalFramework.license.number,
-      timestamp: new Date().toISOString()
-    };
+  detectAmountTampering(transaction) {
+    if (!transaction.qrString || !transaction.amount) return false;
+    
+    // Extract amount from QRIS (tag 54)
+    const amountPattern = /54(\d{2})(\d+)/;
+    const match = transaction.qrString.match(amountPattern);
+    
+    if (!match) return false;
+    
+    const qrisAmount = parseInt(match[2], 10) / 100; // Convert to IDR
+    const reportedAmount = transaction.amount;
+    
+    // Check if amounts match (within 1% tolerance)
+    const tolerance = 0.01;
+    const diff = Math.abs(qrisAmount - reportedAmount) / reportedAmount;
+    
+    return diff > tolerance;
   }
 
-  performAMLCheck(transaction) {
-    // Simulate basic AML checks
-    const suspiciousKeywords = [
-      'TERRORIST',
-      'MONEY LAUNDERING',
-      'FRAUD',
-      'SANCTIONED'
-    ];
-    
-    const customerName = transaction.customerName.toUpperCase();
-    for (const keyword of suspiciousKeywords) {
-      if (customerName.includes(keyword)) {
-        return false;
-      }
-    }
-    
-    // Check for suspicious amount patterns
-    if (transaction.amount === 999999999 || transaction.amount === 123456789) {
+  detectJWTNoneAlg(token) {
+    try {
+      if (!token) return false;
+      const parts = token.split('.');
+      if (parts.length !== 3) return false;
+      
+      const header = JSON.parse(Buffer.from(parts[0], 'base64').toString());
+      return header.alg === 'none' || !header.alg;
+    } catch {
       return false;
     }
-    
-    return true;
   }
 
-  // ========== REAL RISK ENGINE ==========
-  async verifyFundsWithIssuer(transaction) {
-    console.log('🏦 REAL FUNDS VERIFICATION WITH ISSUER BANK');
+  detectSignatureAnomaly(signature) {
+    if (!signature) return false;
     
-    // Simulate real-time connection to issuer bank
-    // In reality: ISO8583 message to issuer via switching
+    // Check length
+    if (signature.length < 10 || signature.length > 512) return true;
     
-    const issuerResponse = {
-      availableBalance: 5000000, // Customer's balance
-      holdAmount: transaction.amount,
-      authorized: transaction.amount <= 5000000,
-      responseCode: transaction.amount <= 5000000 ? '00' : '51',
-      responseMessage: transaction.amount <= 5000000 ? 'APPROVED' : 'INSUFFICIENT FUNDS',
-      authorizationCode: `AUTH${Date.now().toString().slice(-10)}`,
-      rrn: `RRN${Date.now().toString().slice(-12)}`,
-      issuerTimestamp: new Date().toISOString()
-    };
-
-    return issuerResponse.authorized;
+    // Check if it's hex or base64url
+    const isHex = /^[0-9a-fA-F]+$/.test(signature);
+    const isBase64Url = /^[A-Za-z0-9_-]+$/.test(signature);
+    
+    // If neither hex nor base64url, suspicious
+    if (!isHex && !isBase64Url) return true;
+    
+    // Check entropy (too low entropy = suspicious)
+    const entropy = this.calculateEntropy(signature);
+    return entropy < 2.0;
   }
 
-  // ========== FINANCIAL OBLIGATION ==========
-  createFinancialObligation(transaction) {
-    const obligationId = `OBL${Date.now()}${Math.random().toString(36).substr(2, 6)}`;
+  detectHighFrequency(transaction) {
+    const merchantId = transaction.merchantId;
+    const customerId = transaction.customerId || 'unknown';
     
-    return {
-      id: obligationId,
-      type: 'PAYMENT_GUARANTEE',
-      amount: transaction.amount,
-      currency: 'IDR',
-      debtor: {
-        type: 'ACQUIRER',
-        name: 'QRIS Acquirer Licensed',
-        account: this.settlementAccount.accountNumber,
-        bank: this.settlementAccount.bankName
-      },
-      creditor: {
-        type: 'MERCHANT',
-        id: transaction.merchantId,
-        name: transaction.merchantName,
-        account: this.getMerchantAccount(transaction.merchantId)
-      },
-      terms: {
-        settlementDate: this.calculateSettlementDate(),
-        irrevocable: true,
-        unconditional: true,
-        governedBy: 'Indonesian Banking Law & BI Regulations'
-      },
-      legalReference: `CONTRACT/QRIS/${obligationId}`,
-      createdAt: new Date().toISOString()
-    };
-  }
-
-  // ========== REAL LEDGER ENTRY ==========
-  recordInLedger(transaction, obligation) {
-    const entryId = `LED${Date.now()}`;
-    
-    // DOUBLE-ENTRY ACCOUNTING
-    const journalEntries = [
-      {
-        account: this.ledger.accounts.receivableMerchant,
-        type: 'DEBIT',
-        amount: transaction.amount,
-        description: `Receivable from Merchant ${transaction.merchantId}`,
-        reference: transaction.id
-      },
-      {
-        account: this.ledger.accounts.payableIssuer,
-        type: 'CREDIT',
-        amount: transaction.amount,
-        description: `Payable to Issuer for ${transaction.customerAccount}`,
-        reference: obligation.id
-      }
-    ];
-
-    // Calculate fees
-    const acquirerFee = this.calculateFee(transaction.amount);
-    if (acquirerFee > 0) {
-      journalEntries.push({
-        account: this.ledger.accounts.revenueFee,
-        type: 'CREDIT',
-        amount: acquirerFee,
-        description: 'Acquirer fee revenue',
-        reference: `FEE-${transaction.id}`
-      });
+    if (!this.transactionHistory.has(merchantId)) {
+      this.transactionHistory.set(merchantId, []);
     }
-
-    return {
-      entryId,
-      timestamp: new Date().toISOString(),
-      transactionId: transaction.id,
-      journalEntries,
-      balanceImpact: {
-        settlementAccount: this.settlementAccount.balance - transaction.amount,
-        netPosition: -transaction.amount // Negative = kita berhutang ke merchant
-      },
-      posted: true,
-      reconciled: false
-    };
+    
+    const history = this.transactionHistory.get(merchantId);
+    const now = Date.now();
+    
+    // Filter transactions from last 5 minutes
+    const recentTransactions = history.filter(t => 
+      now - t.timestamp < 5 * 60 * 1000
+    );
+    
+    // Check customer frequency
+    const customerTransactions = recentTransactions.filter(t => 
+      t.customerId === customerId
+    );
+    
+    // More than 3 transactions in 5 minutes from same customer
+    if (customerTransactions.length >= 3) {
+      return true;
+    }
+    
+    // Add current transaction to history
+    history.push({
+      timestamp: now,
+      customerId,
+      amount: transaction.amount,
+      qrHash: this.hashQR(transaction.qrString)
+    });
+    
+    // Keep only last 100 transactions per merchant
+    if (history.length > 100) {
+      history.splice(0, history.length - 100);
+    }
+    
+    return false;
   }
 
-  // ========== REAL FUND HOLD ==========
-  async placeFundHold(transaction) {
-    console.log('💰 PLACING FUND HOLD WITH ISSUER');
+  detectAmountRounding(transaction) {
+    const amount = transaction.amount;
     
-    // Simulate ISO8583 message for fund hold
-    const holdRequest = {
-      messageType: '0200', // Financial transaction request
-      processingCode: '000000',
-      amount: transaction.amount,
-      transmissionDateTime: this.formatISO8583DateTime(),
-      systemTraceNumber: this.generateSTAN(),
-      localTransactionTime: this.formatTime(),
-      localTransactionDate: this.formatDate(),
-      expiryDate: this.calculateExpiryDate(),
-      merchantType: '5999',
-      posEntryMode: '021',
-      posConditionCode: '00',
-      acquiringInstitutionCode: '010', // BCA code
-      forwardingInstitutionCode: '020', // Switching code
-      track2Data: this.extractTrack2Data(transaction),
-      retrievalReferenceNumber: this.generateRRN(),
-      authorizationIdResponse: 'APPROVED',
-      responseCode: '00',
-      terminalId: transaction.terminalId,
-      merchantId: transaction.merchantId,
-      additionalData: {
-        qrisData: transaction.qrString,
-        customerName: transaction.customerName,
-        merchantName: transaction.merchantName
-      }
-    };
-
-    // Simulate network delay to issuer
-    await new Promise(resolve => setTimeout(resolve, 300));
-
-    return {
-      holdId: `HOLD${Date.now()}`,
-      status: 'ACTIVE',
-      amount: transaction.amount,
-      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), // 24 jam
-      issuerReference: `ISSREF${Date.now()}`,
-      isoMessage: holdRequest
-    };
+    // Check for suspicious round amounts
+    const suspiciousAmounts = [
+      1000000, 2000000, 5000000, 10000000, // Exact millions
+      1234567, 9999999, 8888888, // Pattern amounts
+    ];
+    
+    // Check if amount is exact multiple of 100k (common in attacks)
+    if (amount % 100000 === 0 && amount > 1000000) {
+      return true;
+    }
+    
+    // Check for exact match with suspicious amounts
+    return suspiciousAmounts.includes(amount);
   }
 
-  // ========== REAL AUTHORIZATION ISSUANCE ==========
-  issueAuthorization(transaction, validationResults) {
-    const authCode = this.generateAuthCode();
-    const rrn = this.generateRRN();
-    
-    return {
-      code: authCode,
-      rrn: rrn,
-      status: 'APPROVED',
-      timestamp: new Date().toISOString(),
-      financialAuthority: this.legalFramework.license.number,
-      guarantee: {
-        type: 'UNCONDITIONAL_PAYMENT_GUARANTEE',
-        issuer: 'QRIS Licensed Acquirer',
-        amount: transaction.amount,
-        currency: 'IDR',
-        validity: 'Until settlement completion',
-        legalBasis: 'Bank Indonesia Regulation No. 21/2020',
-        insuranceCoverage: this.settlementAccount.insurance.coverage
-      },
-      validation: validationResults,
-      terms: {
-        irrevocable: true,
-        final: true,
-        binding: true,
-        governedBy: 'Indonesian Law'
-      }
-    };
-  }
+  // ========== CORE DETECTION ==========
 
-  // ========== REAL SETTLEMENT OBLIGATION ==========
-  generateSettlementObligation(transaction, authorization) {
-    const settlementDate = this.calculateSettlementDate();
+  async detectMLAttacks(transaction) {
+    const detections = [];
+    let totalRisk = 0;
     
-    return {
-      obligationId: `SETTLE${Date.now()}`,
-      type: 'INTERBANK_SETTLEMENT',
-      amount: transaction.amount,
-      currency: 'IDR',
-      parties: {
-        payer: {
-          bank: 'Issuer Bank',
-          account: transaction.customerAccount,
-          bic: this.getBICForAccount(transaction.customerAccount)
-        },
-        payee: {
-          bank: this.settlementAccount.bankName,
-          account: this.settlementAccount.accountNumber,
-          bic: this.settlementAccount.bicCode
-        },
-        beneficiary: {
-          type: 'MERCHANT',
-          id: transaction.merchantId,
-          account: this.getMerchantAccount(transaction.merchantId)
+    // Check each attack pattern
+    for (const [name, detector] of this.attackPatterns) {
+      try {
+        let isDetected = false;
+        
+        switch (name) {
+          case 'QRIS_LENGTH_ANOMALY':
+          case 'QRIS_EMV_INVALID':
+          case 'QRIS_CHECKSUM_TAMPERING':
+            if (transaction.qrString) {
+              isDetected = detector.detect(transaction.qrString);
+            }
+            break;
+            
+          case 'JWT_NONE_ALGORITHM':
+            if (transaction.token) {
+              isDetected = detector.detect(transaction.token);
+            }
+            break;
+            
+          case 'SIGNATURE_ANOMALY':
+            if (transaction.signature) {
+              isDetected = detector.detect(transaction.signature);
+            }
+            break;
+            
+          default:
+            isDetected = detector.detect(transaction);
         }
-      },
-      schedule: {
-        clearing: settlementDate,
-        settlement: this.addBusinessDays(settlementDate, 1),
-        method: 'RTGS (Real Time Gross Settlement)',
-        system: 'BI-SSSS (Bank Indonesia)'
-      },
-      documents: {
-        paymentOrder: `PO/${transaction.id}`,
-        settlementAdvice: `SA/${transaction.id}`,
-        bankStatement: `BS/${transaction.id}`
-      },
-      status: 'PENDING_SETTLEMENT',
-      createdAt: new Date().toISOString()
+        
+        if (isDetected) {
+          detections.push({
+            attackType: name,
+            description: detector.description,
+            riskScore: detector.risk,
+            timestamp: new Date().toISOString()
+          });
+          totalRisk += detector.risk;
+        }
+      } catch (error) {
+        console.error(`Error in detector ${name}:`, error);
+      }
+    }
+    
+    // Behavioral analysis
+    const behaviorScore = await this.analyzeBehavior(transaction);
+    totalRisk += behaviorScore;
+    
+    // Risk scoring
+    const riskLevel = this.getRiskLevel(totalRisk);
+    
+    return {
+      attacksDetected: detections.length > 0,
+      detections,
+      riskScore: Math.min(totalRisk, 1.0),
+      riskLevel,
+      recommendation: this.getRecommendation(detections, riskLevel),
+      timestamp: new Date().toISOString(),
+      confidence: this.calculateConfidence(detections)
     };
+  }
+
+  analyzeBehavior(transaction) {
+    let behaviorScore = 0;
+    
+    // Time-based analysis
+    const hour = new Date().getHours();
+    if (hour < 6 || hour > 23) { // Outside normal business hours
+      behaviorScore += 0.1;
+    }
+    
+    // Amount analysis
+    if (transaction.amount > 5000000) { // Large transaction
+      behaviorScore += 0.1;
+    }
+    
+    // Velocity analysis (if we have previous transactions)
+    if (this.transactionHistory.has(transaction.merchantId)) {
+      const history = this.transactionHistory.get(transaction.merchantId);
+      if (history.length > 10) { // Active merchant
+        const avgAmount = history.reduce((sum, t) => sum + t.amount, 0) / history.length;
+        if (transaction.amount > avgAmount * 3) { // 3x average
+          behaviorScore += 0.2;
+        }
+      }
+    }
+    
+    return behaviorScore;
   }
 
   // ========== HELPER METHODS ==========
-  calculateSettlementDate() {
-    // T+1 business day (skip weekends)
-    const date = new Date();
-    date.setDate(date.getDate() + 1);
-    
-    // Skip weekend
-    if (date.getDay() === 0) date.setDate(date.getDate() + 1); // Sunday -> Monday
-    if (date.getDay() === 6) date.setDate(date.getDate() + 2); // Saturday -> Monday
-    
-    return date.toISOString().split('T')[0];
-  }
 
-  addBusinessDays(dateStr, days) {
-    const date = new Date(dateStr);
-    let added = 0;
-    
-    while (added < days) {
-      date.setDate(date.getDate() + 1);
-      if (date.getDay() !== 0 && date.getDay() !== 6) {
-        added++;
-      }
+  calculateEntropy(str) {
+    const freq = {};
+    for (let i = 0; i < str.length; i++) {
+      const char = str[i];
+      freq[char] = (freq[char] || 0) + 1;
     }
     
-    return date.toISOString().split('T')[0];
+    let entropy = 0;
+    for (const count of Object.values(freq)) {
+      const probability = count / str.length;
+      entropy -= probability * Math.log2(probability);
+    }
+    
+    return entropy;
   }
 
-  generateAuthCode() {
-    return `A${Date.now().toString().slice(-9)}`.match(/.{1,3}/g).join('');
+  hashQR(qrString) {
+    if (!qrString) return '';
+    return crypto.createHash('sha256').update(qrString).digest('hex');
   }
 
-  generateRRN() {
-    return Date.now().toString().slice(-12);
+  getRiskLevel(score) {
+    if (score >= 0.7) return 'CRITICAL';
+    if (score >= 0.5) return 'HIGH';
+    if (score >= 0.3) return 'MEDIUM';
+    if (score >= 0.1) return 'LOW';
+    return 'NONE';
   }
 
-  generateSTAN() {
-    return Math.floor(100000 + Math.random() * 900000).toString();
+  getRecommendation(detections, riskLevel) {
+    if (riskLevel === 'CRITICAL') {
+      return 'BLOCK transaction and alert security team';
+    }
+    if (riskLevel === 'HIGH') {
+      return 'REJECT transaction and flag for review';
+    }
+    if (riskLevel === 'MEDIUM') {
+      return 'Additional verification required';
+    }
+    if (detections.length > 0) {
+      return 'Monitor transaction closely';
+    }
+    return 'No action required';
   }
 
-  formatISO8583DateTime() {
-    const now = new Date();
-    return now.getUTCFullYear().toString().slice(2) +
-           (now.getUTCMonth() + 1).toString().padStart(2, '0') +
-           now.getUTCDate().toString().padStart(2, '0') +
-           now.getUTCHours().toString().padStart(2, '0') +
-           now.getUTCMinutes().toString().padStart(2, '0') +
-           now.getUTCSeconds().toString().padStart(2, '0');
+  calculateConfidence(detections) {
+    if (detections.length === 0) return 1.0;
+    
+    const totalRisk = detections.reduce((sum, d) => sum + d.riskScore, 0);
+    const avgRisk = totalRisk / detections.length;
+    
+    // Higher confidence if multiple detections with high risk
+    if (detections.length >= 3 && avgRisk > 0.5) {
+      return 0.9;
+    }
+    if (detections.length >= 2) {
+      return 0.7;
+    }
+    return 0.5;
   }
 
-  formatDate() {
-    const now = new Date();
-    return now.getUTCFullYear().toString().slice(2) +
-           (now.getUTCMonth() + 1).toString().padStart(2, '0') +
-           now.getUTCDate().toString().padStart(2, '0');
-  }
+  // ========== DEBUG & MONITORING ==========
 
-  formatTime() {
-    const now = new Date();
-    return now.getUTCHours().toString().padStart(2, '0') +
-           now.getUTCMinutes().toString().padStart(2, '0') +
-           now.getUTCSeconds().toString().padStart(2, '0');
-  }
-
-  calculateExpiryDate() {
-    const date = new Date();
-    date.setDate(date.getDate() + 30); // 30 days expiry
-    return date.getUTCFullYear().toString().slice(2) +
-           (date.getUTCMonth() + 1).toString().padStart(2, '0') +
-           date.getUTCDate().toString().padStart(2, '0');
-  }
-
-  extractTrack2Data(transaction) {
-    // Simplified track2 data
-    return `;${transaction.customerAccount || '9999999999999999'}=2412`;
-  }
-
-  calculateFee(amount) {
-    // QRIS fee structure: 0.7% of transaction amount
-    return Math.floor(amount * 0.007);
-  }
-
-  getMerchantAccount(merchantId) {
-    // In reality, from merchant database
-    const merchantAccounts = {
-      'MER001': '8888012345678901',
-      'TOKO001': '8888098765432109',
-      'SHOP123': '8888055555555555'
+  getDetectionStats() {
+    const stats = {
+      totalPatterns: this.attackPatterns.size,
+      activeMerchants: this.transactionHistory.size,
+      totalTransactions: 0,
+      recentDetections: 0
     };
-    return merchantAccounts[merchantId] || '8888000000000000';
+    
+    for (const history of this.transactionHistory.values()) {
+      stats.totalTransactions += history.length;
+    }
+    
+    return stats;
   }
 
-  getBICForAccount(account) {
-    // Map account prefix to BIC
-    if (account.startsWith('8888')) return 'CENAIDJA'; // BCA
-    if (account.startsWith('1000')) return 'BRINIDJA'; // BRI
-    if (account.startsWith('5000')) return 'BMRIIDJA'; // Mandiri
-    return 'INDONESIA'; // Default
+  resetMerchantHistory(merchantId) {
+    if (this.transactionHistory.has(merchantId)) {
+      this.transactionHistory.delete(merchantId);
+      return true;
+    }
+    return false;
   }
 }
 
-// ========== REAL RISK ENGINE CLASS ==========
-class RealRiskEngine {
-  constructor() {
-    this.rules = this.initializeRiskRules();
-    this.velocityWindows = {
-      DAILY: 24 * 60 * 60 * 1000,
-      HOURLY: 60 * 60 * 1000,
-      MINUTE: 60 * 1000
-    };
-  }
+// ========== INSTANTIATE ML DETECTION ==========
+const mlDetector = new MLAttackDetection();
 
-  initializeRiskRules() {
-    return {
-      // Transaction Limits (sesuai BI Regulation)
-      amountLimits: {
-        single: 10000000, // 10 juta
-        dailyPerMerchant: 50000000, // 50 juta
-        dailyPerCustomer: 20000000 // 20 juta
-      },
-      
-      // Velocity Rules
-      velocityRules: {
-        maxTransactionsPerHour: 10,
-        maxAmountPerHour: 5000000,
-        minTimeBetweenTransactions: 30000 // 30 detik
-      },
-      
-      // Risk Scoring
-      scoreWeights: {
-        amount: 0.3,
-        frequency: 0.3,
-        location: 0.2,
-        device: 0.2
-      },
-      
-      // Thresholds
-      thresholds: {
-        low: 30,
-        medium: 60,
-        high: 80
-      }
-    };
-  }
-
-  async assessRisk(transaction) {
-    const riskFactors = [];
-    let riskScore = 0;
-    
-    // 1. Amount Analysis
-    const amountRisk = this.assessAmountRisk(transaction.amount);
-    if (amountRisk.level > 0) {
-      riskFactors.push(amountRisk);
-      riskScore += amountRisk.score * this.rules.scoreWeights.amount;
-    }
-    
-    // 2. Frequency Analysis
-    const frequencyRisk = await this.assessFrequencyRisk(transaction);
-    if (frequencyRisk.level > 0) {
-      riskFactors.push(frequencyRisk);
-      riskScore += frequencyRisk.score * this.rules.scoreWeights.frequency;
-    }
-    
-    // 3. Location Analysis
-    const locationRisk = this.assessLocationRisk(transaction);
-    if (locationRisk.level > 0) {
-      riskFactors.push(locationRisk);
-      riskScore += locationRisk.score * this.rules.scoreWeights.location;
-    }
-    
-    // 4. Device Analysis
-    const deviceRisk = this.assessDeviceRisk(transaction);
-    if (deviceRisk.level > 0) {
-      riskFactors.push(deviceRisk);
-      riskScore += deviceRisk.score * this.rules.scoreWeights.device;
-    }
-    
-    // Determine overall risk level
-    let riskLevel = 'LOW';
-    if (riskScore >= this.rules.thresholds.high) {
-      riskLevel = 'HIGH';
-    } else if (riskScore >= this.rules.thresholds.medium) {
-      riskLevel = 'MEDIUM';
-    }
-    
-    return {
-      score: Math.round(riskScore),
-      level: riskLevel,
-      factors: riskFactors,
-      decision: riskLevel === 'HIGH' ? 'REJECT' : 'APPROVE',
-      timestamp: new Date().toISOString(),
-      engineVersion: '2.1.0'
-    };
-  }
-
-  assessAmountRisk(amount) {
-    let level = 0;
-    let score = 0;
-    const reasons = [];
-    
-    if (amount > this.rules.amountLimits.single) {
-      level = 3;
-      score = 100;
-      reasons.push(`Amount (Rp${amount.toLocaleString()}) exceeds single transaction limit`);
-    } else if (amount > this.rules.amountLimits.single * 0.7) {
-      level = 2;
-      score = 70;
-      reasons.push('High value transaction');
-    } else if (amount > this.rules.amountLimits.single * 0.4) {
-      level = 1;
-      score = 40;
-    }
-    
-    return { level, score, reasons, type: 'AMOUNT_RISK' };
-  }
-
-  async assessFrequencyRisk(transaction) {
-    // Simulate transaction history query
-    const recentTransactions = [
-      { time: Date.now() - 30000, amount: 50000 },
-      { time: Date.now() - 90000, amount: 100000 }
-    ];
-    
-    const lastHourTransactions = recentTransactions.filter(
-      t => Date.now() - t.time <= this.velocityWindows.HOURLY
-    );
-    
-    const lastHourCount = lastHourTransactions.length;
-    const lastHourAmount = lastHourTransactions.reduce((sum, t) => sum + t.amount, 0);
-    
-    let level = 0;
-    let score = 0;
-    const reasons = [];
-    
-    if (lastHourCount >= this.rules.velocityRules.maxTransactionsPerHour) {
-      level = 3;
-      score = 100;
-      reasons.push(`High transaction frequency: ${lastHourCount} transactions in last hour`);
-    } else if (lastHourCount >= this.rules.velocityRules.maxTransactionsPerHour * 0.7) {
-      level = 2;
-      score = 65;
-    }
-    
-    if (lastHourAmount >= this.rules.velocityRules.maxAmountPerHour) {
-      level = Math.max(level, 3);
-      score = Math.max(score, 100);
-      reasons.push(`High amount volume: Rp${lastHourAmount.toLocaleString()} in last hour`);
-    }
-    
-    return { level, score, reasons, type: 'FREQUENCY_RISK' };
-  }
-
-  assessLocationRisk(transaction) {
-    // In reality: geolocation, IP analysis, velocity between locations
-    const suspiciousLocations = [
-      'HIGH_RISK_COUNTRY',
-      'SANCTIONED_REGION'
-    ];
-    
-    const isSuspicious = suspiciousLocations.some(loc => 
-      transaction.location?.includes(loc)
-    );
-    
-    return {
-      level: isSuspicious ? 3 : 0,
-      score: isSuspicious ? 100 : 10,
-      reasons: isSuspicious ? ['Suspicious location detected'] : [],
-      type: 'LOCATION_RISK'
-    };
-  }
-
-  assessDeviceRisk(transaction) {
-    // In reality: device fingerprinting, jailbreak detection, emulator detection
-    const suspiciousDevices = [
-      'EMULATOR_DEVICE',
-      'JAILBROKEN_PHONE'
-    ];
-    
-    const isSuspicious = suspiciousDevices.some(device =>
-      transaction.deviceId?.includes(device)
-    );
-    
-    return {
-      level: isSuspicious ? 3 : 0,
-      score: isSuspicious ? 100 : 10,
-      reasons: isSuspicious ? ['Suspicious device detected'] : [],
-      type: 'DEVICE_RISK'
-    };
-  }
-}
-
-// ========== INSTANTIATE FINANCIAL AUTHORITY ==========
-const financialAuthority = new RealFinancialAuthority();
-
-// ========== WEBSOCKET CONNECTION MANAGEMENT ==========
+// ========== WEBSOCKET FOR REAL-TIME ALERTS ==========
 const activeConnections = new Map();
 
 wss.on('connection', (ws, req) => {
-  console.log('🔌 New WebSocket connection');
+  console.log('🔌 New WebSocket connection for ML alerts');
   
   const connectionId = Date.now().toString();
   ws.connectionId = connectionId;
   
-  // Store the connection
   activeConnections.set(connectionId, {
     ws,
     merchantId: null,
@@ -794,19 +392,22 @@ wss.on('connection', (ws, req) => {
     try {
       const data = JSON.parse(message);
       
-      switch (data.type) {
-        case 'REGISTER_MERCHANT':
-          const conn = activeConnections.get(connectionId);
-          if (conn) {
-            conn.merchantId = data.merchantId;
-            console.log(`📝 Merchant registered: ${data.merchantId}`);
-          }
-          break;
-          
-        case 'PING':
-          ws.send(JSON.stringify({ type: 'PONG', timestamp: new Date().toISOString() }));
-          break;
+      if (data.type === 'REGISTER_MERCHANT') {
+        const conn = activeConnections.get(connectionId);
+        if (conn) {
+          conn.merchantId = data.merchantId;
+          console.log(`📝 ML Alerts registered for merchant: ${data.merchantId}`);
+        }
       }
+      
+      if (data.type === 'PING') {
+        ws.send(JSON.stringify({ 
+          type: 'PONG', 
+          timestamp: new Date().toISOString(),
+          detectionStats: mlDetector.getDetectionStats()
+        }));
+      }
+      
     } catch (error) {
       console.error('WebSocket message error:', error);
     }
@@ -816,367 +417,295 @@ wss.on('connection', (ws, req) => {
     console.log(`🔌 WebSocket connection closed: ${connectionId}`);
     activeConnections.delete(connectionId);
   });
-  
-  ws.on('error', (error) => {
-    console.error(`❌ WebSocket error for ${connectionId}:`, error);
-    activeConnections.delete(connectionId);
-  });
 });
 
-// Helper function to send WebSocket messages
-function safeSend(client, data) {
-  try {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(JSON.stringify(data));
-      return true;
-    }
-  } catch (error) {
-    console.error('Error sending WebSocket message:', error);
-  }
-  return false;
-}
-
-// ========== GENERATE LEGAL RECEIPT ==========
-function generateLegalReceipt(transaction, authorityResult) {
-  const receiptId = `RCP${Date.now()}`;
-  const auth = authorityResult.authorization;
-  const settle = authorityResult.financials.settlement;
+function sendMLAlert(merchantId, detectionResult) {
+  let notified = 0;
   
-  return `
-================================================================
-                  LEGALLY BINDING PAYMENT RECEIPT
-                  BANK INDONESIA LICENSED ACQUIRER
-================================================================
-RECEIPT ID       : ${receiptId}
-ISSUED BY        : ${financialAuthority.legalFramework.license.issuer}
-LICENSE NUMBER   : ${financialAuthority.legalFramework.license.number}
-INSURANCE COVER  : ${financialAuthority.settlementAccount.insurance.coverage}
-================================================================
-TRANSACTION DETAILS
-----------------------------------------------------------------
-TRANSACTION ID   : ${transaction.id}
-AUTHORIZATION    : ${auth.code}
-RRN              : ${auth.rrn}
-DATE & TIME      : ${new Date().toLocaleString()}
-MERCHANT         : ${transaction.merchantName} (${transaction.merchantId})
-CUSTOMER         : ${transaction.customerName}
-AMOUNT           : Rp ${transaction.amount.toLocaleString()}
-PAYMENT METHOD   : QRIS
-ISSUER BANK      : ${transaction.customerAccount.substring(0, 4)}
-================================================================
-FINANCIAL OBLIGATION
-----------------------------------------------------------------
-OBLIGATION ID    : ${authorityResult.financials.obligation.id}
-TYPE             : UNCONDITIONAL PAYMENT GUARANTEE
-GUARANTOR        : QRIS Licensed Acquirer
-SETTLEMENT ACCT  : ${financialAuthority.settlementAccount.accountNumber}
-BANK             : ${financialAuthority.settlementAccount.bankName}
-AMOUNT GUARANTEED: Rp ${transaction.amount.toLocaleString()}
-LEGAL BASIS      : ${auth.guarantee.legalBasis}
-VALIDITY         : ${auth.guarantee.validity}
-================================================================
-SETTLEMENT SCHEDULE
-----------------------------------------------------------------
-CLEARING DATE    : ${settle.schedule.clearing}
-SETTLEMENT DATE  : ${settle.schedule.settlement}
-METHOD           : ${settle.schedule.method}
-SYSTEM           : ${settle.schedule.system}
-BENEFICIARY      : Merchant ${transaction.merchantId}
-ACCOUNT          : ${settle.parties.beneficiary.account}
-================================================================
-LEGAL TERMS & CONDITIONS
-----------------------------------------------------------------
-1. This receipt constitutes proof of payment obligation
-2. Acquirer bears unconditional payment responsibility
-3. Settlement guaranteed via Bank Indonesia system
-4. Disputes governed by Indonesian Banking Law
-5. Arbitration through Bank Indonesia
-================================================================
-RISK ASSESSMENT
-----------------------------------------------------------------
-RISK SCORE       : ${authorityResult.financials.riskScore}/100
-LEVEL            : ${authorityResult.authorization.validation.riskAssessment.level}
-DECISION         : ${authorityResult.authorization.validation.riskAssessment.decision}
-COMPLIANCE       : AML & CFT regulations applied
-================================================================
-AUTHORIZED SIGNATURE (ELECTRONIC)
-----------------------------------------------------------------
-DIGITAL SIGNATURE: ${auth.code}
-TIMESTAMP        : ${auth.timestamp}
-VERIFICATION     : https://verify.bi.go.id/${receiptId}
-================================================================
-         THIS IS A LEGALLY BINDING FINANCIAL DOCUMENT
-================================================================
-`;
-}
-
-// ========== REAL-TIME NOTIFICATION WITH LEGAL BINDING ==========
-function notifyWithLegalAuthority(transaction, authorityResult) {
-  console.log('\n⚖️  SENDING LEGALLY BINDING NOTIFICATION');
-  
-  const legalNotification = {
-    type: 'LEGALLY_BINDING_AUTHORIZATION',
-    transaction: {
-      id: transaction.id,
-      amount: transaction.amount,
-      merchantId: transaction.merchantId,
-      status: 'APPROVED_WITH_FINANCIAL_AUTHORITY'
-    },
-    authority: {
-      license: financialAuthority.legalFramework.license.number,
-      guarantee: 'UNCONDITIONAL_PAYMENT_OBLIGATION',
-      settlementAccount: financialAuthority.settlementAccount.accountNumber
-    },
-    legal: {
-      binding: true,
-      irrevocable: true,
-      disputeResolution: 'Bank Indonesia Arbitration'
-    },
-    timestamp: new Date().toISOString()
-  };
-  
-  // Send to all connected devices for this merchant
-  let notifiedCount = 0;
   activeConnections.forEach((conn, id) => {
-    if (conn.merchantId === transaction.merchantId && conn.ws.readyState === WebSocket.OPEN) {
-      if (safeSend(conn.ws, legalNotification)) {
-        notifiedCount++;
-        
-        // Also send the legal receipt
-        safeSend(conn.ws, {
-          type: 'LEGAL_RECEIPT',
-          receipt: generateLegalReceipt(transaction, authorityResult),
-          printImmediately: true
-        });
+    if (conn.merchantId === merchantId && conn.ws.readyState === WebSocket.OPEN) {
+      try {
+        conn.ws.send(JSON.stringify({
+          type: 'ML_ATTACK_DETECTED',
+          timestamp: new Date().toISOString(),
+          detection: detectionResult,
+          action: detectionResult.recommendation,
+          severity: detectionResult.riskLevel
+        }));
+        notified++;
+      } catch (error) {
+        console.error('Error sending ML alert:', error);
       }
     }
   });
   
-  console.log(`📤 Notifications sent to ${notifiedCount} device(s) for merchant ${transaction.merchantId}`);
+  return notified;
 }
 
 // ========== API ENDPOINTS ==========
 
-// Health check endpoint
+// Health check
 app.get('/', (req, res) => {
   res.json({
     status: 'online',
-    service: 'QRIS Financial Authority Backend',
+    service: 'QRIS ML Attack Detection API',
     version: '1.0.0',
     timestamp: new Date().toISOString(),
+    detectionStats: mlDetector.getDetectionStats(),
     endpoints: {
-      financialAuthority: '/api/financial-authority/process',
-      status: '/api/financial-authority/status',
-      clearing: '/api/financial-authority/clearing',
-      health: '/health'
+      detect: '/api/ml/detect (POST)',
+      stats: '/api/ml/stats (GET)',
+      reset: '/api/ml/reset/:merchantId (DELETE)',
+      health: '/health (GET)'
     }
   });
 });
 
-// Health endpoint
 app.get('/health', (req, res) => {
   res.json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
-    connections: activeConnections.size
+    connections: activeConnections.size,
+    detectionEngine: 'ACTIVE'
   });
 });
 
-// Financial Authority Processing
-app.post("/api/financial-authority/process", async (req, res) => {
-  console.log('\n🏛️  FINANCIAL AUTHORITY PROCESSING');
-  console.log('='.repeat(70));
+// ========== ML DETECTION ENDPOINT ==========
+
+app.post("/api/ml/detect", async (req, res) => {
+  console.log('\n🤖 ML ATTACK DETECTION REQUEST');
+  console.log('='.repeat(60));
   
   const transaction = {
-    id: req.body.transactionId || `FIN${Date.now()}`,
+    id: req.body.transactionId || `TX${Date.now()}`,
     qrString: req.body.qrString,
     amount: parseFloat(req.body.amount) || 0,
     merchantId: req.body.merchantId,
-    merchantName: req.body.merchantName,
-    customerName: req.body.customerName,
-    customerAccount: req.body.customerAccount || '8888012345678901',
-    terminalId: req.body.terminalId || 'TERMINAL-001',
-    location: req.body.location || 'INDONESIA',
-    deviceId: req.body.deviceId || 'DEVICE-001',
+    merchantName: req.body.merchantName || 'Unknown Merchant',
+    customerId: req.body.customerId,
+    customerName: req.body.customerName || 'Unknown Customer',
+    customerAccount: req.body.customerAccount,
+    terminalId: req.body.terminalId,
+    location: req.body.location,
+    deviceId: req.body.deviceId,
+    token: req.headers.authorization?.replace('Bearer ', ''),
+    signature: req.headers['x-signature'],
     timestamp: new Date().toISOString()
   };
   
-  console.log('📋 Transaction for Financial Authority:');
+  console.log('📋 Transaction Details:');
   console.log('   ID:', transaction.id);
-  console.log('   Amount: Rp', transaction.amount.toLocaleString());
   console.log('   Merchant:', transaction.merchantName);
-  console.log('   Customer:', transaction.customerName);
-  console.log('='.repeat(70));
+  console.log('   Amount: Rp', transaction.amount.toLocaleString());
+  console.log('   QR Length:', transaction.qrString?.length || 0);
+  console.log('='.repeat(60));
   
   try {
-    const result = await financialAuthority.processWithFinancialAuthority(transaction);
+    // Run ML detection
+    const detectionResult = await mlDetector.detectMLAttacks(transaction);
     
-    // Generate real legal receipt
-    const receipt = generateLegalReceipt(transaction, result);
+    // Log detection results
+    console.log('🔍 ML Detection Results:');
+    console.log('   Attacks Detected:', detectionResult.attacksDetected);
+    console.log('   Risk Level:', detectionResult.riskLevel);
+    console.log('   Risk Score:', detectionResult.riskScore.toFixed(2));
     
-    // Real-time notification with legal binding
-    notifyWithLegalAuthority(transaction, result);
+    if (detectionResult.detections.length > 0) {
+      console.log('   Detected Attacks:');
+      detectionResult.detections.forEach(d => {
+        console.log(`     - ${d.attackType}: ${d.description} (risk: ${d.riskScore})`);
+      });
+    }
     
-    res.json({
+    // Send real-time alert if attacks detected
+    if (detectionResult.attacksDetected && transaction.merchantId) {
+      const notified = sendMLAlert(transaction.merchantId, detectionResult);
+      console.log(`   📢 Alerts sent to ${notified} connected device(s)`);
+    }
+    
+    // Prepare response
+    const response = {
       success: true,
-      message: "TRANSACTION PROCESSED WITH FINANCIAL AUTHORITY",
-      result,
-      receipt,
-      regulatory: {
-        authority: 'BANK INDONESIA LICENSED',
-        license: financialAuthority.legalFramework.license.number,
-        insurance: financialAuthority.settlementAccount.insurance.coverage,
-        guarantee: 'UNCONDITIONAL PAYMENT OBLIGATION',
-        settlement: result.financials.settlement.schedule.settlement
-      },
-      legal: {
-        binding: true,
-        irrevocable: true,
-        governedBy: 'Indonesian Banking Law',
-        disputeResolution: 'Bank Indonesia Arbitration'
-      }
-    });
+      transactionId: transaction.id,
+      detection: detectionResult,
+      timestamp: new Date().toISOString(),
+      recommendation: detectionResult.recommendation
+    };
+    
+    // Add debug info in development
+    if (process.env.NODE_ENV !== 'production') {
+      response.debug = {
+        qrLength: transaction.qrString?.length,
+        hasToken: !!transaction.token,
+        hasSignature: !!transaction.signature,
+        transactionHistory: mlDetector.transactionHistory.has(transaction.merchantId) 
+          ? mlDetector.transactionHistory.get(transaction.merchantId).length 
+          : 0
+      };
+    }
+    
+    res.json(response);
     
   } catch (error) {
-    console.error('❌ Financial authority processing failed:', error);
+    console.error('❌ ML Detection failed:', error);
     
-    res.status(400).json({
+    res.status(500).json({
       success: false,
-      error: error.message,
-      authority: financialAuthority.legalFramework.license.number,
-      appealProcess: 'Formal appeal can be submitted to Bank Indonesia',
+      error: 'ML_DETECTION_FAILED',
+      message: error.message,
       timestamp: new Date().toISOString()
     });
   }
 });
 
-// Financial Authority Status
-app.get("/api/financial-authority/status", (req, res) => {
+// ========== ML STATISTICS ENDPOINT ==========
+
+app.get("/api/ml/stats", (req, res) => {
+  const stats = mlDetector.getDetectionStats();
+  
+  // Calculate detection rates from recent history
+  let totalTransactions = 0;
+  let totalDetections = 0;
+  
+  mlDetector.transactionHistory.forEach(history => {
+    totalTransactions += history.length;
+    // Simple heuristic: if transaction amount > 5M, count as possible detection
+    totalDetections += history.filter(t => t.amount > 5000000).length;
+  });
+  
+  const detectionRate = totalTransactions > 0 
+    ? (totalDetections / totalTransactions) * 100 
+    : 0;
+  
   res.json({
-    status: 'OPERATIONAL',
-    authority: {
-      name: 'QRIS Licensed Acquirer',
-      license: financialAuthority.legalFramework.license,
-      regulatedBy: financialAuthority.settlementAccount.regulatedBy,
-      insurance: financialAuthority.settlementAccount.insurance
-    },
-    financials: {
-      settlementAccount: {
-        number: financialAuthority.settlementAccount.accountNumber,
-        balance: financialAuthority.settlementAccount.balance,
-        minBalance: financialAuthority.settlementAccount.minBalance,
-        currency: financialAuthority.settlementAccount.currency
-      },
-      ledgerSystem: financialAuthority.ledger.system,
-      compliance: 'BANK INDONESIA REGULATION NO. 21/2020'
-    },
-    security: {
-      hsm: financialAuthority.security.hsm.model,
-      certification: financialAuthority.security.hsm.certified,
-      network: financialAuthority.security.network.connection
-    },
-    guarantees: {
-      payment: 'UNCONDITIONAL PAYMENT OBLIGATION',
-      settlement: 'T+1 via BI-SSSS',
-      legal: 'Contractually binding under Indonesian Law'
+    success: true,
+    stats: {
+      ...stats,
+      detectionRate: detectionRate.toFixed(2) + '%',
+      activeConnections: activeConnections.size,
+      attackPatterns: Array.from(mlDetector.attackPatterns.keys())
     },
     timestamp: new Date().toISOString()
   });
 });
 
-// Clearing Processing
-app.post("/api/financial-authority/clearing", async (req, res) => {
-  console.log('\n🏛️  MANUAL CLEARING PROCESS');
+// ========== RESET MERCHANT HISTORY ==========
+
+app.delete("/api/ml/reset/:merchantId", (req, res) => {
+  const merchantId = req.params.merchantId;
   
-  try {
-    const batchDate = req.body.batchDate ? new Date(req.body.batchDate) : new Date();
-    
-    // Simulate clearing process
-    console.log('📤 Generating clearing file for:', batchDate.toISOString().split('T')[0]);
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    const result = {
-      batchDate: batchDate.toISOString().split('T')[0],
-      totalItems: 1,
-      totalAmount: 50000,
-      status: 'PROCESSED',
-      biReference: `BI/${batchDate.toISOString().split('T')[0]}/001`,
-      returnsCount: 0
-    };
-    
-    res.json({
-      success: true,
-      message: "CLEARING BATCH PROCESSED",
-      result,
-      nextSteps: [
-        'Settlement will be processed via RTGS',
-        'Funds will be credited to merchant accounts',
-        'Regulatory report submitted to Bank Indonesia'
-      ]
-    });
-    
-  } catch (error) {
-    console.error('Clearing failed:', error);
-    res.status(500).json({
+  if (!merchantId) {
+    return res.status(400).json({
       success: false,
-      error: error.message,
-      retryProcedure: 'Submit batch file manually to BI-SSSS'
+      error: 'MERCHANT_ID_REQUIRED',
+      message: 'Merchant ID is required'
     });
   }
+  
+  const reset = mlDetector.resetMerchantHistory(merchantId);
+  
+  res.json({
+    success: true,
+    reset,
+    merchantId,
+    message: reset 
+      ? `Transaction history for merchant ${merchantId} has been reset`
+      : `No history found for merchant ${merchantId}`,
+    timestamp: new Date().toISOString()
+  });
 });
 
-// WebSocket status endpoint
-app.get("/api/websocket-status", (req, res) => {
-  const connections = [];
+// ========== TEST ENDPOINT FOR ATTACK SIMULATION ==========
+
+app.post("/api/ml/test-attack", (req, res) => {
+  console.log('\n🧪 TESTING ML ATTACK DETECTION');
   
-  activeConnections.forEach((conn, id) => {
-    connections.push({
-      id,
-      merchantId: conn.merchantId,
-      connectionTime: conn.connectionTime,
-      status: conn.ws.readyState === WebSocket.OPEN ? 'connected' : 'disconnected'
-    });
+  // Generate test attack patterns
+  const testCases = [
+    {
+      name: 'QRIS Manipulation Attack',
+      transaction: {
+        qrString: 'INVALID_QRIS_DATA_WITHOUT_EMV_HEADER',
+        amount: 1000000,
+        merchantId: 'TEST_MERCHANT',
+        customerId: 'TEST_ATTACKER'
+      }
+    },
+    {
+      name: 'JWT None Algorithm Attack',
+      transaction: {
+        qrString: '000201010212...6304ABCD',
+        amount: 5000000,
+        merchantId: 'TEST_MERCHANT',
+        customerId: 'TEST_ATTACKER',
+        token: 'eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.'
+      }
+    },
+    {
+      name: 'High Frequency Attack',
+      transaction: {
+        qrString: '000201010212...6304ABCD',
+        amount: 100000,
+        merchantId: 'TEST_MERCHANT',
+        customerId: 'REPEAT_CUSTOMER'
+      }
+    }
+  ];
+  
+  const results = testCases.map(testCase => {
+    const detection = mlDetector.detectMLAttacks(testCase.transaction);
+    return {
+      testCase: testCase.name,
+      detected: detection.attacksDetected,
+      riskLevel: detection.riskLevel,
+      attacks: detection.detections.map(d => d.attackType)
+    };
   });
   
   res.json({
-    totalConnections: activeConnections.size,
-    connections,
+    success: true,
+    testResults: results,
+    summary: {
+      totalTests: testCases.length,
+      attacksDetected: results.filter(r => r.detected).length,
+      effectiveness: (results.filter(r => r.detected).length / testCases.length * 100).toFixed(1) + '%'
+    },
     timestamp: new Date().toISOString()
   });
 });
 
 // ========== SERVER STARTUP ==========
+
 const PORT = process.env.PORT || 10000;
 
 server.listen(PORT, () => {
   console.log('\n' + '='.repeat(70));
-  console.log('🚀 SERVER STARTED SUCCESSFULLY');
+  console.log('🚀 ML ATTACK DETECTION SERVER STARTED');
   console.log('='.repeat(70));
   console.log(`📡 HTTP Server: http://localhost:${PORT}`);
   console.log(`🔌 WebSocket Server: ws://localhost:${PORT}`);
   console.log('='.repeat(70));
-  console.log('🏛️  REAL FINANCIAL AUTHORITY SYSTEM INITIALIZED');
-  console.log('='.repeat(70));
-  console.log('🔐 LICENSED BY: Bank Indonesia');
-  console.log('💰 SETTLEMENT ACCOUNT:', financialAuthority.settlementAccount.accountNumber);
-  console.log('   BALANCE: Rp', financialAuthority.settlementAccount.balance.toLocaleString());
-  console.log('   INSURANCE:', financialAuthority.settlementAccount.insurance.coverage);
-  console.log('⚖️  LEGAL FRAMEWORK: Indonesian Banking Law');
-  console.log('📊 RISK ENGINE: Real-time fraud detection');
-  console.log('🏦 CLEARING: BI-SSSS (T+1)');
+  console.log('🤖 ML DETECTION ENGINE: ACTIVE');
+  console.log(`   Attack Patterns: ${mlDetector.attackPatterns.size}`);
+  console.log('   Detection Types:');
+  Array.from(mlDetector.attackPatterns.keys()).forEach(pattern => {
+    console.log(`     • ${pattern}`);
+  });
   console.log('='.repeat(70));
   console.log('\n📋 AVAILABLE ENDPOINTS:');
-  console.log('   GET  /                            - Server info');
-  console.log('   GET  /health                      - Health check');
-  console.log('   POST /api/financial-authority/process  - Process transaction with authority');
-  console.log('   GET  /api/financial-authority/status   - Financial authority status');
-  console.log('   POST /api/financial-authority/clearing - Process clearing batch');
-  console.log('   GET  /api/websocket-status        - WebSocket connections status');
+  console.log('   POST /api/ml/detect          - Detect ML attacks in transaction');
+  console.log('   GET  /api/ml/stats          - Get ML detection statistics');
+  console.log('   DELETE /api/ml/reset/:id    - Reset merchant history');
+  console.log('   POST /api/ml/test-attack    - Test attack detection');
+  console.log('   GET  /health                - Health check');
+  console.log('='.repeat(70));
+  console.log('\n⚠️  IMPORTANT: This server is for educational purposes only.');
+  console.log('   Use responsibly for security testing and research.');
   console.log('='.repeat(70));
 });
 
-// ========== ERROR HANDLING ==========
+// Error handling
 process.on('uncaughtException', (error) => {
   console.error('❌ Uncaught Exception:', error);
 });
