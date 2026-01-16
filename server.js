@@ -91,6 +91,48 @@ const CONFIG = {
   }
 };
 
+class PhaseResult {
+  constructor(phaseName, scheduledTime, actualStartTime, success, options = {}) {
+    this.phaseName = phaseName;
+    this.scheduledTime = scheduledTime; // ms dari T+0
+    this.actualStartTime = new Date(actualStartTime).toISOString();
+    this.actualEndTime = options.actualEndTime ? 
+      new Date(options.actualEndTime).toISOString() : null;
+    this.success = success;
+    this.error = options.error || null;
+    this.responseData = options.responseData || null;
+    this.duration = this.calculateDuration();
+    this.isOnTime = this.checkTiming();
+  }
+
+  calculateDuration() {
+    if (!this.actualEndTime) return 0;
+    const start = new Date(this.actualStartTime);
+    const end = new Date(this.actualEndTime);
+    return end - start; // duration in ms
+  }
+
+  checkTiming() {
+    if (!this.actualEndTime) return true;
+    const tolerance = this.scheduledTime * 1.1; // 10% tolerance
+    return this.duration <= tolerance;
+  }
+
+  toJSON() {
+    return {
+      phaseName: this.phaseName,
+      scheduledTime: this.scheduledTime,
+      actualStartTime: this.actualStartTime,
+      actualEndTime: this.actualEndTime,
+      success: this.success,
+      error: this.error,
+      responseData: this.responseData,
+      duration: this.duration,
+      isOnTime: this.isOnTime
+    };
+  }
+}
+
 // ========== ATTACKER CORE TERLENGKAP ==========
 class PentestAttacker {
   constructor() {
@@ -283,194 +325,215 @@ class PentestAttacker {
   
   // ========== TIMELINE ATTACK METHODS ==========
   
-  async executeTimelineAttack(attackData) {
-    console.log('⏱️ EXECUTING TIMELINE ATTACK...');
+ async executeTimelineAttack(attackData) {
+  console.log('⏱️ EXECUTING TIMELINE ATTACK...');
+  
+  const attackId = `TIMELINE_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+  const timelinePhases = CONFIG.timeline.phases;
+  
+  const results = {
+    attackId,
+    type: 'TIMELINE_ATTACK',
+    startedAt: new Date().toISOString(),
+    phases: {}, // ✅ Ini akan berisi Map<String, PhaseResult>
+    timeline: timelinePhases,
+    timingAccuracy: {},
+    success: false,
+    qrData: attackData.qrData?.substring(0, 50) + '...',
+    mode: this.hasRealFetch ? 'REAL' : 'SIMULATION'
+  };
+  
+  try {
+    const overallStartTime = Date.now();
     
-    const attackId = `TIMELINE_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
-    const timelinePhases = CONFIG.timeline.phases;
+    // Store active timeline attack
+    this.timelineAttacks.set(attackId, {
+      id: attackId,
+      startTime: overallStartTime,
+      currentPhase: 'QR_SCAN',
+      progress: 0,
+      results: {}
+    });
     
-    const results = {
-      attackId,
-      type: 'TIMELINE_ATTACK',
-      startedAt: new Date().toISOString(),
-      phases: {},
-      timeline: timelinePhases,
-      timingAccuracy: {},
-      success: false,
-      qrData: attackData.qrData?.substring(0, 50) + '...',
-      mode: this.hasRealFetch ? 'REAL' : 'SIMULATION'
-    };
-    
-    try {
-      const overallStartTime = Date.now();
+    // Execute each phase with precision timing
+    for (const [phaseName, scheduledDelay] of Object.entries(timelinePhases)) {
+      const phaseStartTime = Date.now();
       
-      // Store active timeline attack
-      this.timelineAttacks.set(attackId, {
-        id: attackId,
-        startTime: overallStartTime,
-        currentPhase: 'QR_SCAN',
-        progress: 0,
-        results: {}
-      });
+      // Update current phase
+      this.timelineAttacks.get(attackId).currentPhase = phaseName;
+      this.timelineAttacks.get(attackId).progress = 
+        (Object.keys(timelinePhases).indexOf(phaseName) + 1) / Object.keys(timelinePhases).length;
       
-      // Execute each phase with precision timing
-      for (const [phaseName, scheduledDelay] of Object.entries(timelinePhases)) {
-        const phaseStartTime = Date.now();
-        
-        // Update current phase
-        this.timelineAttacks.get(attackId).currentPhase = phaseName;
-        this.timelineAttacks.get(attackId).progress = 
-          (Object.keys(timelinePhases).indexOf(phaseName) + 1) / Object.keys(timelinePhases).length;
-        
-        // Wait for scheduled delay
-        const timeSinceStart = Date.now() - overallStartTime;
-        const remainingDelay = Math.max(0, scheduledDelay - timeSinceStart);
-        
-        if (remainingDelay > 0) {
-          await this.delay(remainingDelay);
-        }
-        
-        // Execute phase
-        const phaseResult = await this.executeTimelinePhase(phaseName, attackData);
-        
-        const actualDelay = Date.now() - overallStartTime;
-        const deviation = actualDelay - scheduledDelay;
-        const tolerance = scheduledDelay * (CONFIG.timeline.tolerancePercent / 100);
-        const accuracy = Math.abs(deviation) <= tolerance;
-        
-        results.phases[phaseName] = {
-          ...phaseResult,
-          scheduledDelay,
-          actualDelay,
-          deviation,
-          accuracy,
-          tolerance,
-          startTime: new Date(phaseStartTime).toISOString(),
-          endTime: new Date().toISOString(),
-          duration: Date.now() - phaseStartTime
-        };
-        
-        results.timingAccuracy[phaseName] = accuracy;
-        
-        // Broadcast progress
-        this.broadcastProgress(attackId, `TIMELINE_${phaseName}`, {
-          phase: phaseName,
-          progress: 'completed',
-          deviation,
-          accuracy,
-          scheduledDelay,
-          actualDelay,
-          result: phaseResult
-        });
-        
-        // Broadcast timeline update
-        this.broadcastToAll({
-          type: 'TIMELINE_UPDATE',
-          attackId,
-          phase: phaseName,
-          progress: this.timelineAttacks.get(attackId).progress,
-          timestamp: new Date().toISOString()
-        });
+      // Wait for scheduled delay
+      const timeSinceStart = Date.now() - overallStartTime;
+      const remainingDelay = Math.max(0, scheduledDelay - timeSinceStart);
+      
+      if (remainingDelay > 0) {
+        await this.delay(remainingDelay);
       }
       
-      // Finalize attack
-      results.completedAt = new Date().toISOString();
-      results.totalDuration = Date.now() - overallStartTime;
-      results.success = Object.values(results.timingAccuracy).every(acc => acc === true);
-      results.accuracyScore = (Object.values(results.timingAccuracy).filter(acc => acc).length / 
-                              Object.keys(results.timingAccuracy).length) * 100;
+      // Execute phase dan dapatkan PhaseResult
+      const phaseResult = await this.executeTimelinePhase(phaseName, attackData);
       
-      // Clean up
-      this.timelineAttacks.delete(attackId);
+      const actualDelay = Date.now() - overallStartTime;
+      const deviation = actualDelay - scheduledDelay;
+      const tolerance = scheduledDelay * (CONFIG.timeline.tolerancePercent / 100);
+      const accuracy = Math.abs(deviation) <= tolerance;
       
-      // Save to history
-      this.attackHistory.push(results);
+      // ✅ Simpan phaseResult ke results.phases
+      results.phases[phaseName] = phaseResult;
       
-      console.log(`✅ Timeline attack completed: ${results.accuracyScore.toFixed(1)}% accuracy`);
+      // ✅ Tambahkan timing info ke phaseResult
+      results.phases[phaseName].timingInfo = {
+        scheduledDelay,
+        actualDelay,
+        deviation,
+        accuracy,
+        tolerance,
+        startTime: new Date(phaseStartTime).toISOString(),
+        endTime: new Date().toISOString(),
+        duration: Date.now() - phaseStartTime
+      };
       
-      return results;
+      results.timingAccuracy[phaseName] = accuracy;
       
-    } catch (error) {
-      console.error('💥 Timeline attack failed:', error);
+      // Broadcast progress
+      this.broadcastProgress(attackId, `TIMELINE_${phaseName}`, {
+        phase: phaseName,
+        progress: 'completed',
+        deviation,
+        accuracy,
+        scheduledDelay,
+        actualDelay,
+        result: phaseResult // ✅ Ini PhaseResult object
+      });
       
-      results.error = error.message;
-      results.completedAt = new Date().toISOString();
-      results.success = false;
-      
-      this.timelineAttacks.delete(attackId);
-      this.attackHistory.push(results);
-      
-      throw error;
+      // Broadcast timeline update
+      this.broadcastToAll({
+        type: 'TIMELINE_UPDATE',
+        attackId,
+        phase: phaseName,
+        progress: this.timelineAttacks.get(attackId).progress,
+        timestamp: new Date().toISOString()
+      });
     }
+    
+    // Finalize attack
+    results.completedAt = new Date().toISOString();
+    results.totalDuration = Date.now() - overallStartTime;
+    results.success = Object.values(results.timingAccuracy).every(acc => acc === true);
+    results.accuracyScore = (Object.values(results.timingAccuracy).filter(acc => acc).length / 
+                            Object.keys(results.timingAccuracy).length) * 100;
+    
+    // Clean up
+    this.timelineAttacks.delete(attackId);
+    
+    // Save to history
+    this.attackHistory.push(results);
+    
+    console.log(`✅ Timeline attack completed: ${results.accuracyScore.toFixed(1)}% accuracy`);
+    
+    return results;
+    
+  } catch (error) {
+    console.error('💥 Timeline attack failed:', error);
+    
+    results.error = error.message;
+    results.completedAt = new Date().toISOString();
+    results.success = false;
+    
+    this.timelineAttacks.delete(attackId);
+    this.attackHistory.push(results);
+    
+    throw error;
   }
+}
   
   async executeTimelinePhase(phase, data) {
-    const phaseMethods = {
-      'QR_SCAN': () => ({
-        success: true,
-        message: 'QR scanned successfully',
-        qrData: data.qrData?.substring(0, 50) + '...',
-        attackMethod: 'QR_SCAN_SIMULATION',
-        risk: 'LOW'
-      }),
-      
-      'QR_VALIDATED': () => this.analyzeQR(data.qrData),
-      
-      'OTP_REQUESTED': () => this.attackOTPRequest({
-        phone: data.customerPhone || CONFIG.attacks.testPhones[0]
-      }),
-      
-      'USER_INPUT_OTP': () => ({
-        success: true,
-        message: 'User input OTP simulated',
-        requiresOTP: true,
-        attackMethod: 'OTP_INPUT_SIMULATION',
-        risk: 'LOW'
-      }),
-      
-      'OTP_VERIFIED': () => this.attackOTPVerify({
-        phone: data.customerPhone || CONFIG.attacks.testPhones[0]
-      }),
-      
-      'AUTH_ACCEPTED': () => ({
-        success: true,
-        message: 'Authorization accepted by bank',
-        authCode: `AUTH${Date.now().toString().slice(-6)}`,
-        bankCode: 'BCA',
-        attackMethod: 'AUTH_ACCEPTANCE_SIMULATION',
-        risk: 'MEDIUM'
-      }),
-      
-      'UI_SHOWS_SUCCESS': () => ({
-        success: true,
-        message: 'UI showing success to user',
-        uiState: 'SUCCESS',
-        attackMethod: 'UI_FEEDBACK_SIMULATION',
-        risk: 'LOW'
-      }),
-      
-      'CALLBACK_MERCHANT_START': () => this.attackCallbackSpoof({
-        transactionId: data.transactionId || `TX_${Date.now()}`,
-        amount: data.amount || 100000,
-        merchantId: data.targetMerchant || 'BCA_TEST'
-      }),
-      
-      'CALLBACK_MERCHANT_END': () => ({
-        success: true,
-        message: 'Merchant callback completed',
-        timestamp: new Date().toISOString(),
-        attackMethod: 'CALLBACK_COMPLETION',
-        risk: 'HIGH'
-      })
-    };
+  const phaseStartTime = new Date();
+  
+  const phaseMethods = {
+    'QR_SCAN': () => ({
+      success: true,
+      message: 'QR scanned successfully',
+      qrData: data.qrData?.substring(0, 50) + '...',
+      attackMethod: 'QR_SCAN_SIMULATION',
+      risk: 'LOW'
+    }),
     
-    const method = phaseMethods[phase];
-    if (!method) {
-      throw new Error(`Unknown timeline phase: ${phase}`);
-    }
+    'QR_VALIDATED': () => this.analyzeQR(data.qrData),
     
-    return await method();
+    'OTP_REQUESTED': () => this.attackOTPRequest({
+      phone: data.customerPhone || CONFIG.attacks.testPhones[0]
+    }),
+    
+    'USER_INPUT_OTP': () => ({
+      success: true,
+      message: 'User input OTP simulated',
+      requiresOTP: true,
+      attackMethod: 'OTP_INPUT_SIMULATION',
+      risk: 'LOW'
+    }),
+    
+    'OTP_VERIFIED': () => this.attackOTPVerify({
+      phone: data.customerPhone || CONFIG.attacks.testPhones[0]
+    }),
+    
+    'AUTH_ACCEPTED': () => ({
+      success: true,
+      message: 'Authorization accepted by bank',
+      authCode: `AUTH${Date.now().toString().slice(-6)}`,
+      bankCode: 'BCA',
+      attackMethod: 'AUTH_ACCEPTANCE_SIMULATION',
+      risk: 'MEDIUM'
+    }),
+    
+    'UI_SHOWS_SUCCESS': () => ({
+      success: true,
+      message: 'UI showing success to user',
+      uiState: 'SUCCESS',
+      attackMethod: 'UI_FEEDBACK_SIMULATION',
+      risk: 'LOW'
+    }),
+    
+    'CALLBACK_MERCHANT_START': () => this.attackCallbackSpoof({
+      transactionId: data.transactionId || `TX_${Date.now()}`,
+      amount: data.amount || 100000,
+      merchantId: data.targetMerchant || 'BCA_TEST'
+    }),
+    
+    'CALLBACK_MERCHANT_END': () => ({
+      success: true,
+      message: 'Merchant callback completed',
+      timestamp: new Date().toISOString(),
+      attackMethod: 'CALLBACK_COMPLETION',
+      risk: 'HIGH'
+    })
+  };
+  
+  const method = phaseMethods[phase];
+  if (!method) {
+    throw new Error(`Unknown timeline phase: ${phase}`);
   }
+  
+  const phaseResultData = await method();
+  const phaseEndTime = new Date();
+  
+  // ✅ BUAT PhaseResult OBJECT
+  const phaseResult = new PhaseResult(
+    phase,
+    CONFIG.timeline.phases[phase],
+    phaseStartTime,
+    phaseResultData.success,
+    {
+      actualEndTime: phaseEndTime,
+      error: phaseResultData.success ? null : phaseResultData.message,
+      responseData: phaseResultData
+    }
+  );
+  
+  return phaseResult.toJSON(); // ✅ Return as JSON object
+}
   
   // ========== DOSEN ENDPOINT TESTING ==========
   
